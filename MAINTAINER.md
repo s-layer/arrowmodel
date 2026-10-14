@@ -8,7 +8,7 @@
 Clone the repository and install with uv (handles both Python and Rust build):
 
 ```bash
-git clone https://github.com/Anentropic/arrowmodel.git
+git clone https://github.com/s-layer/arrowmodel.git
 cd arrowmodel
 uv sync --dev
 ```

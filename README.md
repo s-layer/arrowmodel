@@ -2,13 +2,13 @@
 
 [![PyPI](https://img.shields.io/pypi/v/arrowmodel)](https://pypi.org/project/arrowmodel/)
 [![Python](https://img.shields.io/pypi/pyversions/arrowmodel)](https://pypi.org/project/arrowmodel/)
-[![License](https://img.shields.io/github/license/Anentropic/arrowmodel)](LICENSE)
+[![License](https://img.shields.io/github/license/s-layer/arrowmodel)](LICENSE)
 
 Dict-free, single-step conversion from Apache Arrow buffers to Pydantic v2 model instances.
 
 arrowmodel uses a Rust core (via PyO3) to walk Arrow `RecordBatch` and `Table` buffers directly, building Pydantic model instances in a tight loop with no intermediate Python dicts. It replaces the `to_pylist()` + `Model(**row)` two-step with a single call that is roughly 2x faster for flat schemas.
 
-[Full Documentation](https://anentropic.github.io/arrowmodel/)
+[Full Documentation](https://s-layer.github.io/arrowmodel/)
 
 ## Quick Start
 
