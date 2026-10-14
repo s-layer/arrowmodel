@@ -1,6 +1,6 @@
 [project]
 name = "arrowmodel"
-version = "1.0.0"
+version = "1.0.1"
 description = "A Python library for Apache Arrow"
 readme = "README.md"
 authors = [
@@ -10,6 +10,12 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.13.4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/s-layer/arrowmodel"
+Documentation = "https://s-layer.github.io/arrowmodel/"
+Source = "https://github.com/s-layer/arrowmodel"
+Issues = "https://github.com/s-layer/arrowmodel/issues"
 
 [build-system]
 requires = ["maturin>=1.14.1,<2.0"]
