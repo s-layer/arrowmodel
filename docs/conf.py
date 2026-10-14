@@ -25,7 +25,7 @@ autoapi_options = [
 # Theme
 html_theme = "shibuya"
 html_theme_options = {
-    "github_url": "https://github.com/anentropic/arrowmodel",
+    "github_url": "https://github.com/s-layer/arrowmodel",
 }
 
 # Intersphinx
