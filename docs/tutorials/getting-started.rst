@@ -20,8 +20,10 @@ loop: Arrow data in, Pydantic models out.
 Install arrowmodel
 ------------------
 
-arrowmodel ships as a pre-built binary wheel. No Rust toolchain is needed on
-your machine.
+arrowmodel ships as a pre-built binary wheel for Linux (x86_64, aarch64), macOS on
+Apple Silicon (arm64) and Windows (x64), so no Rust toolchain is needed on those
+platforms. Anywhere else, including Intel Macs, the install builds from source and
+needs Rust 1.83 or later.
 
 .. tab-set::
 
@@ -149,7 +151,8 @@ arrowmodel handles both transparently:
 What you learned
 ----------------
 
-- arrowmodel installs as a binary wheel -- no Rust toolchain required.
+- arrowmodel installs as a binary wheel on the main platforms -- no Rust toolchain
+  required there.
 - You define a Pydantic ``BaseModel`` whose field names match Arrow column names.
 - :py:func:`~arrowmodel.model_convert` converts a ``RecordBatch`` or ``Table``
   into a ``list`` of model instances in a single call.

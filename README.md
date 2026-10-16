@@ -18,7 +18,10 @@ arrowmodel uses a Rust core (via PyO3) to walk Arrow `RecordBatch` and `Table` b
 pip install arrowmodel
 ```
 
-No Rust toolchain needed -- pre-built wheels are provided.
+Pre-built wheels are provided for Linux (x86_64, aarch64), macOS on Apple Silicon
+(arm64) and Windows (x64), so no Rust toolchain is needed there. On any other
+platform, including Intel Macs, pip builds from source and needs Rust 1.83 or later
+(install it with [rustup](https://rustup.rs)).
 
 ### First Use
 
