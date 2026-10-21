@@ -145,7 +145,7 @@ Performance characteristics
 
 From the project's benchmarks (`bench_convert.py
 <https://github.com/s-layer/arrowmodel/blob/main/benchmarks/bench_convert.py>`__, recorded in `the results file
-<https://github.com/s-layer/arrowmodel/blob/main/benchmarks/results-v1.0.1-direct-construct-2026-10-21.txt>`__) on a flat schema
+<https://github.com/s-layer/arrowmodel/blob/main/benchmarks/results-v1.1.0-2026-10-21.txt>`__) on a flat schema
 of seven primitive and temporal columns, ``RecordBatch`` input, best of five
 rounds:
 
@@ -159,36 +159,36 @@ rounds:
      - ``to_pylist()`` + ``model_construct``
      - Fast path vs ``to_pylist()``
    * - 100
-     - 142 µs
-     - 378 µs
-     - 488 µs
-     - 3.4x
+     - 145 µs
+     - 380 µs
+     - 526 µs
+     - 3.6x
    * - 1,000
-     - 1.6 ms
-     - 3.9 ms
-     - 5.0 ms
-     - 3.1x
+     - 1.2 ms
+     - 3.3 ms
+     - 5.5 ms
+     - 4.5x
    * - 38,000
-     - 80 ms
-     - 193 ms
-     - 274 ms
-     - 3.4x
+     - 82 ms
+     - 202 ms
+     - 257 ms
+     - 3.1x
 
-For flat schemas, the fast path is roughly 3x faster than the pure-Python
+For flat schemas, the fast path is 3x to 4.5x faster than the pure-Python
 approach and roughly 2.5x faster than the validated path. ``Table`` input (10
 batches) shows the same ratios.
 
 For deeply nested models (10 levels of struct-in-struct with lists), the gap
 widens. ``model_construct`` does not recurse, so the pure-Python baseline for
 this benchmark calls it at every level to build the nested models, as arrowmodel
-does. At 1,000 rows the fast path takes 8.3 ms, the validated path 17.5 ms and
-the baseline 51.5 ms: the fast path is about 5-6x faster than the baseline and
+does. At 1,000 rows the fast path takes 8.5 ms, the validated path 17.3 ms and
+the baseline 43.7 ms: the fast path is about 5x faster than the baseline and
 about 2x faster than the validated path.
 
 The validated path adds the cost of JSON serialisation and Pydantic's validation
-pipeline on top of the extraction. For flat schemas it is still a little faster
+pipeline on top of the extraction. For flat schemas it is still faster
 than ``to_pylist()`` + ``model_construct``, and for the nested benchmark it is
-about 3x faster than building the nested models that way. Either way it gives
+about 2-3x faster than building the nested models that way. Either way it gives
 you the same guarantees as calling ``model_validate_json`` directly.
 
 A note on float NaN and Infinity

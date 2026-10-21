@@ -51,9 +51,12 @@ Interface and hands you back typed models, roughly 3x faster than
 
    .. grid-item-card:: Any Arrow Source
       :text-align: center
+      :link: how-to-iterate-large-datasets
+      :link-type: ref
 
-      Accepts any Arrow-PyCapsule-compatible input -- pyarrow, Polars,
-      nanoarrow -- via the Arrow C Data Interface.
+      Accepts any Arrow record batch or stream -- a pyarrow ``Table`` or
+      ``RecordBatchReader``, a Polars ``DataFrame``, nanoarrow -- via the
+      Arrow PyCapsule Interface.
 
 .. grid:: 1 2 3 3
 

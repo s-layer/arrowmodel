@@ -155,7 +155,8 @@ What you learned
   required there.
 - You define a Pydantic ``BaseModel`` whose field names match Arrow column names.
 - :py:func:`~arrowmodel.model_convert` converts a ``RecordBatch`` or ``Table``
-  into a ``list`` of model instances in a single call.
+  (or any Arrow stream, such as a ``RecordBatchReader`` or a Polars
+  ``DataFrame``) into a ``list`` of model instances in a single call.
 - Conversion happens in Rust via the Arrow C Data Interface -- no intermediate
   Python dicts.
 
@@ -166,5 +167,7 @@ Next steps
   the converter class, or the ``ArrowModel`` base class.
 - :ref:`how-to-use-validated-mode` -- enable full Pydantic validation when you
   need it.
+- :ref:`how-to-iterate-large-datasets` -- yield models one at a time from
+  large Tables and streaming query results.
 - :ref:`explanation-fast-vs-validated` -- understand the performance trade-offs
   between the fast path and the validated path.

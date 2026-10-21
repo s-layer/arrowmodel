@@ -66,12 +66,13 @@ ArrowModel.convert
    @classmethod
    def convert(
        cls,
-       data: pa.RecordBatch | pa.Table,
+       data: ArrowData,
        *,
        validate: bool = False,
    ) -> list[Self]: ...
 
-Convert an Arrow ``RecordBatch`` or ``Table`` to a list of model instances.
+Convert Arrow data to a list of model instances. Every batch is read into
+one list; use :py:meth:`~arrowmodel.ArrowModel.iter` to keep memory flat.
 
 **Parameters:**
 
@@ -83,8 +84,11 @@ Convert an Arrow ``RecordBatch`` or ``Table`` to a list of model instances.
      - Type
      - Description
    * - ``data``
-     - ``pa.RecordBatch | pa.Table``
-     - Arrow data to convert. Accepts any object that exposes the
+     - :py:data:`~arrowmodel.ArrowData`
+     - A ``RecordBatch`` or ``Table``, or any Arrow stream of record
+       batches (a ``RecordBatchReader``, a Polars ``DataFrame``, a nanoarrow
+       array stream). A ``RecordBatchReader`` is consumed. Accepts any
+       object that exports ``__arrow_c_array__`` or ``__arrow_c_stream__`` through the
        `Arrow PyCapsule Interface <https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html>`_
        (pyarrow, Polars, nanoarrow).
    * - ``validate``
@@ -100,8 +104,12 @@ the subclass: ``User.convert(batch)`` returns ``list[User]``.
 
 **Raises:**
 
-- ``ValueError`` -- Arrow schema is missing one or more required model fields.
-  The error message lists the missing column names and the available columns.
+- ``TypeError`` -- ``data`` is not Arrow record-batch data (for example a
+  plain ``Array``, a non-struct ``ChunkedArray``, a Polars ``Series`` or
+  ``LazyFrame``, or a list of dicts). The message names the type passed.
+- ``ValueError`` -- Arrow schema is missing one or more required model fields,
+  raised from the schema before any batch is read. The error message lists
+  the missing column names and the available columns.
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
@@ -122,17 +130,18 @@ ArrowModel.iter
    @classmethod
    def iter(
        cls,
-       data: pa.RecordBatch | pa.Table,
+       data: ArrowData,
        *,
        validate: bool = False,
    ) -> Iterator[Self]: ...
 
 Lazily yield individual model instances from Arrow data.
 
-For ``Table`` input with multiple ``RecordBatch`` chunks, only one batch's
-worth of instances is materialised in memory at a time. Each instance is yielded
-individually. For ``RecordBatch`` input, behaviour is equivalent to iterating
-over :py:meth:`~arrowmodel.ArrowModel.convert` results.
+For a multi-batch ``Table`` or an Arrow stream, batches are read one at a time
+as you iterate, so only one batch's worth of instances is materialised in
+memory at a time. Each instance is yielded individually. For ``RecordBatch``
+input, behaviour is equivalent to iterating over
+:py:meth:`~arrowmodel.ArrowModel.convert` results.
 
 **Parameters:**
 
@@ -144,8 +153,10 @@ over :py:meth:`~arrowmodel.ArrowModel.convert` results.
      - Type
      - Description
    * - ``data``
-     - ``pa.RecordBatch | pa.Table``
-     - Arrow data to convert.
+     - :py:data:`~arrowmodel.ArrowData`
+     - A ``RecordBatch`` or ``Table``, or any Arrow stream of record
+       batches (a ``RecordBatchReader``, a Polars ``DataFrame``, a nanoarrow
+       array stream). A ``RecordBatchReader`` is consumed.
    * - ``validate``
      - ``bool`` (keyword-only, default ``False``)
      - When ``False``, uses the fast path (``model_construct`` semantics).
@@ -155,10 +166,17 @@ over :py:meth:`~arrowmodel.ArrowModel.convert` results.
 
 **Raises:**
 
-- ``ValueError`` -- Arrow schema is missing one or more required model fields.
+- ``TypeError`` -- ``data`` is not Arrow record-batch data (for example a
+  plain ``Array``, a non-struct ``ChunkedArray``, a Polars ``Series`` or
+  ``LazyFrame``, or a list of dicts). The message names the type passed.
+- ``ValueError`` -- Arrow schema is missing one or more required model fields,
+  raised from the schema before any batch is read.
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
+
+``iter`` is a generator, so these errors are raised on the first ``next()``,
+not when ``iter`` is called.
 
 .. code-block:: python
 
@@ -248,7 +266,7 @@ ArrowModelConverter.convert
 
 .. code-block:: python
 
-   def convert(self, data: pa.RecordBatch | pa.Table) -> list[BaseModel]: ...
+   def convert(self, data: ArrowData) -> list[BaseModel]: ...
 
 Convert Arrow data to a list of Pydantic model instances.
 
@@ -262,9 +280,11 @@ Convert Arrow data to a list of Pydantic model instances.
      - Type
      - Description
    * - ``data``
-     - ``pa.RecordBatch | pa.Table``
-     - Arrow data to convert. The schema is cross-referenced against the
-       model's field mapping on each call (column indices may differ
+     - :py:data:`~arrowmodel.ArrowData`
+     - A ``RecordBatch`` or ``Table``, or any Arrow stream of record
+       batches (a ``RecordBatchReader``, a Polars ``DataFrame``, a nanoarrow
+       array stream). A ``RecordBatchReader`` is consumed. The schema is
+       cross-referenced against the model's field mapping on each call (column indices may differ
        between batches with the same logical schema).
 
 **Returns:** ``list[BaseModel]`` -- a list of model instances. Returns an empty
@@ -272,9 +292,12 @@ list for empty input.
 
 **Raises:**
 
-- ``ValueError`` -- Arrow schema is missing one or more required model fields.
-  Optional fields with defaults are silently skipped when absent.
-  Extra Arrow columns not present in the model are silently ignored.
+- ``TypeError`` -- ``data`` is not Arrow record-batch data (for example a
+  plain ``Array``, a non-struct ``ChunkedArray``, a Polars ``Series`` or
+  ``LazyFrame``, or a list of dicts). The message names the type passed.
+- ``ValueError`` -- Arrow schema is missing one or more required model fields,
+  raised from the schema before any batch is read. Optional fields with
+  defaults are silently skipped when absent. Extra Arrow columns not present in the model are silently ignored.
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
@@ -308,16 +331,21 @@ list for empty input.
    table = pa.Table.from_batches([batch, another_batch])
    all_orders = converter.convert(table)
 
+   # So do Arrow streams, such as a RecordBatchReader or a Polars DataFrame
+   reader = pa.RecordBatchReader.from_batches(batch.schema, [batch, another_batch])
+   streamed_orders = converter.convert(reader)  # reads every batch; reader is now used up
+
 ArrowModelConverter.iter
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
-   def iter(self, data: pa.RecordBatch | pa.Table) -> Iterator[BaseModel]: ...
+   def iter(self, data: ArrowData) -> Iterator[BaseModel]: ...
 
 Lazily yield individual model instances from Arrow data.
 
-For ``Table`` input with multiple chunks, only one ``RecordBatch`` is
+For a multi-batch ``Table`` or an Arrow stream, batches are read one at a
+time as you iterate, so only one ``RecordBatch`` worth of instances is
 materialised at a time. For ``RecordBatch`` input, behaviour is equivalent to
 iterating over :py:meth:`~arrowmodel.ArrowModelConverter.convert` results.
 
@@ -331,17 +359,26 @@ iterating over :py:meth:`~arrowmodel.ArrowModelConverter.convert` results.
      - Type
      - Description
    * - ``data``
-     - ``pa.RecordBatch | pa.Table``
-     - Arrow data to convert.
+     - :py:data:`~arrowmodel.ArrowData`
+     - A ``RecordBatch`` or ``Table``, or any Arrow stream of record
+       batches (a ``RecordBatchReader``, a Polars ``DataFrame``, a nanoarrow
+       array stream). A ``RecordBatchReader`` is consumed.
 
 **Yields:** ``BaseModel`` -- model instances one at a time.
 
 **Raises:**
 
-- ``ValueError`` -- Arrow schema is missing one or more required model fields.
+- ``TypeError`` -- ``data`` is not Arrow record-batch data (for example a
+  plain ``Array``, a non-struct ``ChunkedArray``, a Polars ``Series`` or
+  ``LazyFrame``, or a list of dicts). The message names the type passed.
+- ``ValueError`` -- Arrow schema is missing one or more required model fields,
+  raised from the schema before any batch is read.
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
+
+``iter`` is a generator, so these errors are raised on the first ``next()``,
+not when ``iter`` is called.
 
 .. code-block:: python
 
@@ -358,7 +395,7 @@ model_convert
 
    def model_convert(
        model_class: type[BaseModel],
-       data: pa.RecordBatch | pa.Table,
+       data: ArrowData,
        *,
        validate: bool = False,
    ) -> list[BaseModel]: ...
@@ -380,8 +417,10 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
      - ``type[BaseModel]``
      - The Pydantic v2 model class to convert into.
    * - ``data``
-     - ``pa.RecordBatch | pa.Table``
-     - Arrow data to convert.
+     - :py:data:`~arrowmodel.ArrowData`
+     - A ``RecordBatch`` or ``Table``, or any Arrow stream of record
+       batches (a ``RecordBatchReader``, a Polars ``DataFrame``, a nanoarrow
+       array stream). A ``RecordBatchReader`` is consumed.
    * - ``validate``
      - ``bool`` (keyword-only, default ``False``)
      - When ``False``, uses the fast path (``model_construct`` semantics).
@@ -391,7 +430,11 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
 
 **Raises:**
 
-- ``ValueError`` -- Arrow schema is missing required model fields.
+- ``TypeError`` -- ``data`` is not Arrow record-batch data (for example a
+  plain ``Array``, a non-struct ``ChunkedArray``, a Polars ``Series`` or
+  ``LazyFrame``, or a list of dicts). The message names the type passed.
+- ``ValueError`` -- Arrow schema is missing required model fields, raised
+  from the schema before any batch is read.
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
@@ -432,7 +475,7 @@ model_iter
 
    def model_iter(
        model_class: type[BaseModel],
-       data: pa.RecordBatch | pa.Table,
+       data: ArrowData,
        *,
        validate: bool = False,
    ) -> Iterator[BaseModel]: ...
@@ -454,8 +497,10 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
      - ``type[BaseModel]``
      - The Pydantic v2 model class to convert into.
    * - ``data``
-     - ``pa.RecordBatch | pa.Table``
-     - Arrow data to convert.
+     - :py:data:`~arrowmodel.ArrowData`
+     - A ``RecordBatch`` or ``Table``, or any Arrow stream of record
+       batches (a ``RecordBatchReader``, a Polars ``DataFrame``, a nanoarrow
+       array stream). A ``RecordBatchReader`` is consumed.
    * - ``validate``
      - ``bool`` (keyword-only, default ``False``)
      - When ``False``, uses the fast path (``model_construct`` semantics).
@@ -465,12 +510,19 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
 
 **Raises:**
 
-- ``ValueError`` -- Arrow schema is missing required model fields.
+- ``TypeError`` -- ``data`` is not Arrow record-batch data (for example a
+  plain ``Array``, a non-struct ``ChunkedArray``, a Polars ``Series`` or
+  ``LazyFrame``, or a list of dicts). The message names the type passed.
+- ``ValueError`` -- Arrow schema is missing required model fields, raised
+  from the schema before any batch is read.
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
 - ``NotImplementedError`` -- The model uses unsupported alias types
   (``AliasPath``, ``AliasChoices``, or ``AliasGenerator``).
+
+``iter`` is a generator, so these errors are raised on the first ``next()``,
+not when ``iter`` is called.
 
 .. warning::
 
@@ -492,6 +544,59 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
    table = pa.table({"id": [1, 2, 3], "name": ["Alice", "Bob", "Carol"]})
    for user in model_iter(User, table):
        print(user.name)
+
+----
+
+Input types
+-----------
+
+Type aliases and protocols for annotating your own code that passes Arrow data
+to arrowmodel. They describe the objects that the ``data`` parameter accepts.
+You never need to construct them: any object with the right dunder method
+matches.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Name
+     - Description
+   * - :py:data:`~arrowmodel.ArrowData`
+     - ``ArrowArrayExportable | ArrowStreamExportable``. The type of every
+       ``data`` parameter: a ``RecordBatch``, a ``Table``, or any Arrow stream
+       of record batches.
+   * - :py:class:`~arrowmodel.ArrowArrayExportable`
+     - A ``Protocol`` for objects with ``__arrow_c_array__``: a pyarrow
+       ``RecordBatch`` or ``StructArray``, a nanoarrow struct array. The array
+       must be a struct of columns.
+   * - :py:class:`~arrowmodel.ArrowStreamExportable`
+     - A ``Protocol`` for objects with ``__arrow_c_stream__``: a pyarrow
+       ``Table`` or ``RecordBatchReader``, a ``ChunkedArray`` of structs, a
+       Polars ``DataFrame``, a nanoarrow array stream. The stream must yield
+       record batches.
+
+The protocols check only that the method exists. A plain ``Array`` has
+``__arrow_c_array__`` and a Polars ``Series`` has ``__arrow_c_stream__``, so
+both type-check, but neither holds record batches and both raise
+``TypeError`` at runtime.
+
+.. code-block:: python
+
+   import pyarrow as pa
+   from arrowmodel import ArrowData, ArrowModel
+
+
+   class User(ArrowModel):
+       id: int
+       name: str
+
+
+   def load_users(data: ArrowData) -> list[User]:
+       return User.convert(data)
+
+
+   load_users(pa.table({"id": [1, 2], "name": ["Alice", "Bob"]}))
+   # [User(id=1, name='Alice'), User(id=2, name='Bob')]
 
 ----
 

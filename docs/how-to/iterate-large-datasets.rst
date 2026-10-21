@@ -1,16 +1,16 @@
 .. meta::
-   :description: Use lazy iteration to process large Arrow Tables one batch at a time without materialising every model in memory.
+   :description: Use lazy iteration to process large Arrow Tables and streams one batch at a time without materialising every model in memory.
 
 .. _how-to-iterate-large-datasets:
 
 How to Iterate over Large Datasets
 ===================================
 
-When your Arrow ``Table`` has millions of rows, calling
-:py:meth:`~arrowmodel.ArrowModelConverter.convert` would materialise every
-model instance at once and spike memory usage. The ``iter`` API yields
-instances lazily, one at a time, while only materialising one ``RecordBatch``
-worth of models at a time.
+When your Arrow ``Table`` has millions of rows, or your query result arrives as
+a stream, calling :py:meth:`~arrowmodel.ArrowModelConverter.convert` would
+materialise every model instance at once and spike memory usage. The ``iter``
+API yields instances lazily, one at a time, while only materialising one
+``RecordBatch`` worth of models at a time.
 
 Use ArrowModel.iter
 -------------------
@@ -79,43 +79,96 @@ For one-off iteration in a REPL or script:
 How batch-at-a-time works
 --------------------------
 
-Arrow ``Table`` objects contain one or more ``RecordBatch`` chunks. When you
-call ``iter``, arrowmodel processes one batch at a time:
+A ``Table`` holds one or more ``RecordBatch`` chunks, and an Arrow stream (a
+``RecordBatchReader``, a Polars ``DataFrame``, a nanoarrow array stream)
+hands out record batches one after another. When you call ``iter``,
+arrowmodel processes one batch at a time:
 
-1. Convert the first ``RecordBatch`` into a list of models (in Rust).
+1. Read the first ``RecordBatch`` and convert it into a list of models (in Rust).
 2. Yield each model from that list.
-3. When the list is exhausted, convert the next batch.
+3. When the list is exhausted, read and convert the next batch.
 4. Repeat until all batches are consumed.
 
-This means memory usage is proportional to the largest single batch in the
-Table, not the total row count. If your Table has 10 batches of 100,000 rows
-each, only ~100,000 model instances exist in memory at any point.
+This means memory usage is proportional to the largest single batch, not the
+total row count. If your Table or stream has 10 batches of 100,000 rows each,
+only ~100,000 model instances exist in memory at any point.
 
 .. note::
 
-   For a ``RecordBatch`` input (a single batch, not a Table), ``iter`` behaves
-   identically to iterating over the result of ``convert``. The lazy advantage
-   only appears with multi-batch Tables.
+   For a ``RecordBatch`` input (a single batch), ``iter`` behaves identically
+   to iterating over the result of ``convert``. The lazy advantage only appears
+   with multi-batch Tables and streams.
+
+.. _iterate-record-batch-reader:
 
 Stream from a RecordBatchReader
 -------------------------------
 
-``convert`` and ``iter`` accept a ``RecordBatch`` or a ``Table``, not a
-``pyarrow.RecordBatchReader``. Passing a reader raises ``ValueError``. To keep
-memory bounded while a query streams in, loop over the reader yourself and
-convert each batch as it arrives:
+Pass a ``pyarrow.RecordBatchReader`` straight to
+:py:meth:`~arrowmodel.ArrowModel.iter`. arrowmodel pulls the next batch from
+the reader only when it needs more rows, so memory stays bounded by one batch
+even while the query result is still arriving:
 
 .. code-block:: python
 
-   # ADBC cursors expose a reader via fetch_record_batch()
-   reader = cur.fetch_record_batch()
+   import pyarrow as pa
+   from arrowmodel import ArrowModel
 
-   for batch in reader:
-       for user in User.iter(batch):
-           print(user)
 
-Calling ``reader.read_all()`` instead gives you a ``Table`` you can pass
-directly, at the cost of holding the whole result in memory.
+   class User(ArrowModel):
+       id: int
+       name: str
+       score: float
+
+
+   batches = [
+       pa.record_batch({"id": [1, 2], "name": ["Alice", "Bob"], "score": [9.5, 8.0]}),
+       pa.record_batch({"id": [3, 4], "name": ["Carol", "Dave"], "score": [7.3, 6.1]}),
+   ]
+   reader = pa.RecordBatchReader.from_batches(batches[0].schema, batches)
+
+   for user in User.iter(reader):
+       print(f"{user.name}: {user.score}")
+   # Alice: 9.5
+   # Bob: 8.0
+   # Carol: 7.3
+   # Dave: 6.1
+
+In practice the reader usually comes from a database driver. An ADBC cursor
+gives you one with ``fetch_record_batch()``:
+
+.. code-block:: python
+
+   import adbc_driver_sqlite.dbapi as adbc_sqlite
+
+   with adbc_sqlite.connect("users.db") as conn:
+       with conn.cursor() as cur:
+           cur.execute("SELECT id, name, score FROM users")
+           for user in User.iter(cur.fetch_record_batch()):
+               print(user)
+
+Keep the cursor and connection open until you finish iterating. The reader
+reads from the cursor, so closing it first makes the next read fail with
+``ValueError``. To serve a reader from a web endpoint, see
+:ref:`how-to-integrate-fastapi`.
+
+:py:meth:`~arrowmodel.ArrowModel.convert` accepts a reader too, but it reads
+every batch into one list, just as ``reader.read_all()`` would. Use ``iter``
+when the point is to keep memory flat.
+
+.. warning::
+
+   A ``RecordBatchReader`` can be read only once. Converting it again returns
+   an empty list, as ``reader.read_all()`` would. A ``Table`` or a Polars
+   ``DataFrame`` hands out a fresh stream on every call, so you can convert
+   those as many times as you like.
+
+The schema is checked before any batch is read. If the reader is missing a
+required column, ``iter`` raises ``ValueError`` on the first ``next()``,
+without pulling a single batch from the source.
+
+Polars ``DataFrame`` objects take the same route: ``User.iter(df)`` reads the
+frame batch by batch, with no pyarrow involved.
 
 Iterate with validation
 -----------------------
@@ -145,3 +198,30 @@ it before the next one arrives:
    with open("users.jsonl", "w") as f:
        for user in User.iter(table):
            f.write(user.model_dump_json() + "\n")
+
+Handle input errors
+-------------------
+
+``iter`` is a generator, so nothing runs until you ask for the first row.
+Errors show up on the first ``next()`` (or the first pass of a ``for`` loop),
+not on the line that calls ``iter``:
+
+.. code-block:: python
+
+   rows = User.iter(pa.array([1, 2, 3]))  # no error yet
+   next(rows)
+   # TypeError: arrowmodel converts a RecordBatch or Table (or any Arrow stream
+   # of record batches, such as a RecordBatchReader or a Polars DataFrame);
+   # got pyarrow.lib.Int64Array.
+
+- **TypeError naming your input type.** ``iter`` and ``convert`` take record
+  batches: a ``RecordBatch``, a ``Table``, or a stream of record batches. A
+  plain ``Array``, a non-struct ``ChunkedArray``, a Polars ``Series`` or
+  ``LazyFrame``, or a list of dicts raises ``TypeError``. Call ``.collect()``
+  on a ``LazyFrame``, or ``.to_frame()`` on a ``Series``, first.
+- **ValueError about missing required columns.** The source's schema lacks a
+  column for a required model field. The message lists the missing names and
+  the columns that are available.
+- **An empty result from a reader.** The reader was already read, by an
+  earlier conversion or a ``for batch in reader`` loop. Get a new reader from
+  the source.
