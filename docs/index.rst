@@ -9,8 +9,8 @@ Overview
 **arrowmodel** converts Apache Arrow ``RecordBatch`` and ``Table`` objects directly
 into Pydantic v2 model instances -- no intermediate Python dicts, no two-step
 materialisation. A tight Rust loop walks the Arrow buffers via the Arrow C Data
-Interface and hands you back typed models, roughly 2x faster than
-``to_pylist()`` + Pydantic construction.
+Interface and hands you back typed models, roughly 3x faster than
+``to_pylist()`` + Pydantic construction for flat schemas.
 
 .. code-block:: python
 
@@ -40,13 +40,13 @@ Interface and hands you back typed models, roughly 2x faster than
    .. grid-item-card:: Dict-Free Conversion
       :text-align: center
 
-      Skips ``to_pylist()`` entirely. Arrow buffers go straight to
-      ``model_construct`` calls in a single Rust loop.
+      Skips ``to_pylist()`` entirely. A single Rust loop builds each model
+      straight from the Arrow buffers, exactly as ``model_construct`` would.
 
-   .. grid-item-card:: ~2x Faster
+   .. grid-item-card:: ~3x Faster
       :text-align: center
 
-      Roughly twice as fast as the pure-Python approach for flat schemas,
+      Roughly three times as fast as the pure-Python approach for flat schemas,
       with less memory allocation pressure.
 
    .. grid-item-card:: Any Arrow Source

@@ -135,6 +135,15 @@ class Outer(BaseModel):
     homes: list[Inner] | None = None
 
 
+class OuterContainers(BaseModel):
+    """Struct models reached through each container type that rebuilds extractors per row."""
+
+    id: int
+    large: list[Inner] | None = None
+    fixed: list[Inner] | None = None
+    by_name: list[tuple[str, Inner]] | None = None
+
+
 class OuterExtra(BaseModel):
     id: int
     home: InnerExtra
@@ -204,6 +213,44 @@ CASES: dict[str, tuple[type[BaseModel], pa.RecordBatch]] = {
             }
         ),
     ),
+    "large_list_of_struct": (
+        OuterContainers,
+        pa.record_batch(
+            {
+                "id": [1, 2],
+                "large": pa.array(
+                    [[{"city": "SF", "ignored": 1}], None],
+                    type=pa.large_list(pa.struct([("city", pa.utf8()), ("ignored", pa.int64())])),
+                ),
+            }
+        ),
+    ),
+    "fixed_size_list_of_struct": (
+        OuterContainers,
+        pa.record_batch(
+            {
+                "id": [1, 2],
+                "fixed": pa.array(
+                    [[{"city": "A", "zip_code": 1}, {"city": "B", "zip_code": 2}], None],
+                    type=pa.list_(pa.struct([("city", pa.utf8()), ("zip_code", pa.int64())]), 2),
+                ),
+            }
+        ),
+    ),
+    "map_of_struct": (
+        OuterContainers,
+        pa.record_batch(
+            {
+                "id": [1, 2],
+                "by_name": pa.array(
+                    [[("home", {"city": "NYC", "zip_code": 3})], None],
+                    type=pa.map_(
+                        pa.utf8(), pa.struct([("city", pa.utf8()), ("zip_code", pa.int64())])
+                    ),
+                ),
+            }
+        ),
+    ),
     "nested_missing_required": (
         Outer,
         # Inner.city is required but absent: model_construct leaves it out.
@@ -241,6 +288,8 @@ def _state(obj: Any) -> Any:
         )
     if isinstance(obj, list):
         return [_state(v) for v in cast("list[Any]", obj)]
+    if isinstance(obj, tuple):
+        return tuple(_state(v) for v in cast("tuple[Any, ...]", obj))
     return obj
 
 
@@ -334,7 +383,10 @@ class TestDirectConstructionSemantics:
         assert a.__pydantic_extra__ == {}
         assert a.__pydantic_extra__ is not b.__pydantic_extra__
 
-    @pytest.mark.parametrize("case", ["plain", "nested"])
+    @pytest.mark.parametrize(
+        "case",
+        ["plain", "nested", "large_list_of_struct", "fixed_size_list_of_struct", "map_of_struct"],
+    )
     def test_does_not_call_python_model_construct(self, case: str) -> None:
         """
         The fast path builds instances without running ``BaseModel.model_construct``.

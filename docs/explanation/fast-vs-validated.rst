@@ -37,7 +37,7 @@ The two paths at a glance
      - Skipped
      - Enforced
    * - Speed
-     - About 3x faster than ``to_pylist()`` + ``model_construct``
+     - About 3x faster than ``to_pylist()`` + ``model_construct`` for flat schemas
      - About 2.5x slower than the fast path (JSON round-trip + validation)
 
 How the fast path works
@@ -130,9 +130,10 @@ When to use which
 Performance characteristics
 ----------------------------
 
-From the project's benchmarks (``benchmarks/bench_convert.py``) on a flat
-schema of seven primitive and temporal columns, ``RecordBatch`` input, best of
-five rounds:
+From the project's benchmarks (``benchmarks/bench_convert.py``, recorded in
+``benchmarks/results-v1.0.1-direct-construct-2026-10-21.txt``) on a flat schema
+of seven primitive and temporal columns, ``RecordBatch`` input, best of five
+rounds:
 
 .. list-table::
    :header-rows: 1
@@ -144,23 +145,23 @@ five rounds:
      - ``to_pylist()`` + ``model_construct``
      - Fast path speedup
    * - 100
-     - 161 µs
-     - 420 µs
-     - 514 µs
-     - 3.2x
+     - 152 µs
+     - 403 µs
+     - 512 µs
+     - 3.4x
    * - 1,000
-     - 1.6 ms
-     - 4.9 ms
-     - 5.6 ms
-     - 3.5x
+     - 1.7 ms
+     - 4.3 ms
+     - 4.8 ms
+     - 2.9x
    * - 38,000
-     - 92 ms
-     - 238 ms
-     - 295 ms
-     - 3.2x
+     - 77 ms
+     - 199 ms
+     - 268 ms
+     - 3.5x
 
-The fast path is roughly 3x faster than the pure-Python approach and roughly
-2.5x faster than the validated path. For deeply nested models (10 levels of
+For flat schemas, the fast path is roughly 3x faster than the pure-Python
+approach and roughly 2.5x faster than the validated path. For deeply nested models (10 levels of
 struct-in-struct with lists), the fast path is still about 2x faster than the
 validated path, but slower than ``to_pylist()`` + ``model_construct``. That
 comparison flatters the baseline: ``model_construct`` does not recurse, so the
@@ -168,9 +169,10 @@ baseline leaves the nested levels as plain dicts, while arrowmodel builds every
 nested model instance.
 
 The validated path adds the cost of JSON serialisation and Pydantic's validation
-pipeline on top of the extraction. It is still a little faster than
-``to_pylist()`` + ``model_construct``, and it gives you the same guarantees as
-calling ``model_validate_json`` directly.
+pipeline on top of the extraction. For flat schemas it is still a little faster
+than ``to_pylist()`` + ``model_construct``; for the nested benchmark it is about
+3.5x slower than that (non-recursive) baseline. Either way it gives you the same
+guarantees as calling ``model_validate_json`` directly.
 
 A note on float NaN and Infinity
 ---------------------------------
