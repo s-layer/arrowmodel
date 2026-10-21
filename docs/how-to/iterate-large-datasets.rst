@@ -217,9 +217,6 @@ not on the line that calls ``iter``:
    # of record batches, such as a RecordBatchReader or a Polars DataFrame);
    # got pyarrow.lib.Int64Array.
 
-For some inputs, such as a ``ChunkedArray`` of numbers or a Polars ``Series``,
-the message ends with a detail from the Arrow C Data Interface in parentheses.
-
 - **TypeError naming your input type.** ``iter`` and ``convert`` take record
   batches: a ``RecordBatch``, a ``Table``, or a stream of record batches. A
   plain ``Array``, a non-struct ``ChunkedArray``, a Polars ``Series`` or
@@ -230,6 +227,14 @@ the message ends with a detail from the Arrow C Data Interface in parentheses.
 - **ValueError about missing required columns.** The source's schema lacks a
   column for a required model field. The message lists the missing names and
   the columns that are available.
+- **ValueError about null rows.** A ``StructArray`` or struct ``ChunkedArray``
+  has a null at the top level. A null row has no field values to build a model
+  from, so filter it out first (for example with ``pyarrow.compute.drop_null``).
+  Null *fields* inside a row are fine.
+- **ValueError: Failed to read the next Arrow record batch.** The source failed
+  part-way, for example because the cursor was closed or the query errored.
+  The message includes the source's own error. With ``iter``, the rows from
+  earlier batches have already been yielded.
 - **An empty result from a reader.** The reader was already read, by an
   earlier conversion or a ``for batch in reader`` loop. Get a new reader from
   the source.

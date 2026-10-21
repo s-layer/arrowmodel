@@ -63,7 +63,7 @@ users = User.convert(batch)
 
 arrowmodel accepts any Arrow record batch, or stream of record batches, via the Arrow PyCapsule Interface:
 
-- **pyarrow** -- `RecordBatch`, `Table`, `RecordBatchReader` (read lazily by `iter()`), `StructArray`, and a `ChunkedArray` of structs
+- **pyarrow** -- `RecordBatch`, `Table`, `RecordBatchReader` (read lazily by `iter()`), `StructArray`, and a `ChunkedArray` of structs (with no null rows)
 - **Polars** -- `DataFrame`
 - **nanoarrow** -- struct arrays and array streams
 - **Other sources** -- any object that exports `__arrow_c_array__` (a record batch) or `__arrow_c_stream__` (a stream of record batches), such as the reader from an ADBC cursor's `fetch_record_batch()`

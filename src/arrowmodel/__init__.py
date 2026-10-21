@@ -426,7 +426,8 @@ class ArrowModel(BaseModel):
         Raises:
             TypeError: If data is not a RecordBatch or an Arrow stream of
                 record batches, or a dict field maps to an Arrow Map column.
-            ValueError: If the Arrow schema is missing a required field.
+            ValueError: If the Arrow schema is missing a required field, a
+                struct array has null rows, or reading the source fails.
         """
         if validate:
             if not hasattr(cls, "_arrow_converter_validated"):
@@ -455,7 +456,8 @@ class ArrowModel(BaseModel):
         Raises:
             TypeError: If data is not a RecordBatch or an Arrow stream of
                 record batches, or a dict field maps to an Arrow Map column.
-            ValueError: If the Arrow schema is missing a required field.
+            ValueError: If the Arrow schema is missing a required field, a
+                struct array has null rows, or reading the source fails.
         """
         if validate:
             if not hasattr(cls, "_arrow_converter_validated"):

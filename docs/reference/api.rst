@@ -110,6 +110,8 @@ the subclass: ``User.convert(batch)`` returns ``list[User]``.
 - ``ValueError`` -- Arrow schema is missing one or more required model fields,
   raised from the schema before any batch is read. The error message lists
   the missing column names and the available columns.
+- ``ValueError`` -- A struct array input has null rows, or the source fails
+  while a batch is being read ("Failed to read the next Arrow record batch").
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
@@ -171,6 +173,8 @@ input, behaviour is equivalent to iterating over
   ``LazyFrame``, or a list of dicts). The message names the type passed.
 - ``ValueError`` -- Arrow schema is missing one or more required model fields,
   raised from the schema before any batch is read.
+- ``ValueError`` -- A struct array input has null rows, or the source fails
+  while a batch is being read ("Failed to read the next Arrow record batch").
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
@@ -298,6 +302,8 @@ list for empty input.
 - ``ValueError`` -- Arrow schema is missing one or more required model fields,
   raised from the schema before any batch is read. Optional fields with
   defaults are silently skipped when absent. Extra Arrow columns not present in the model are silently ignored.
+- ``ValueError`` -- A struct array input has null rows, or the source fails
+  while a batch is being read ("Failed to read the next Arrow record batch").
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
@@ -374,6 +380,8 @@ iterating over :py:meth:`~arrowmodel.ArrowModelConverter.convert` results.
   ``LazyFrame``, or a list of dicts). The message names the type passed.
 - ``ValueError`` -- Arrow schema is missing one or more required model fields,
   raised from the schema before any batch is read.
+- ``ValueError`` -- A struct array input has null rows, or the source fails
+  while a batch is being read ("Failed to read the next Arrow record batch").
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
@@ -436,6 +444,8 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
   ``LazyFrame``, or a list of dicts). The message names the type passed.
 - ``ValueError`` -- Arrow schema is missing required model fields, raised
   from the schema before any batch is read.
+- ``ValueError`` -- A struct array input has null rows, or the source fails
+  while a batch is being read ("Failed to read the next Arrow record batch").
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
@@ -516,6 +526,8 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
   ``LazyFrame``, or a list of dicts). The message names the type passed.
 - ``ValueError`` -- Arrow schema is missing required model fields, raised
   from the schema before any batch is read.
+- ``ValueError`` -- A struct array input has null rows, or the source fails
+  while a batch is being read ("Failed to read the next Arrow record batch").
 - ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
   Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
   the field that way instead.
@@ -571,7 +583,7 @@ matches.
    * - :py:class:`~arrowmodel.ArrowArrayExportable`
      - A ``Protocol`` for objects with ``__arrow_c_array__``: a pyarrow
        ``RecordBatch`` or ``StructArray``, a nanoarrow struct array. The array
-       must be a struct of columns.
+       must be a struct of columns with no null rows.
    * - :py:class:`~arrowmodel.ArrowStreamExportable`
      - A ``Protocol`` for objects with ``__arrow_c_stream__``: a pyarrow
        ``Table`` or ``RecordBatchReader``, a ``ChunkedArray`` of structs, a

@@ -1,11 +1,12 @@
 use std::sync::Mutex;
 
-use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
-use arrow_schema::{DataType, SchemaRef};
+use arrow_array::{Array, RecordBatch, StructArray};
+use arrow_schema::{DataType, Schema, SchemaRef};
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
-use pyo3_arrow::{PyRecordBatch, PyRecordBatchReader, PySchema};
+use pyo3_arrow::ffi::{ArrayIterator, ArrayReader};
+use pyo3_arrow::{PyArray, PyArrayReader, PySchema};
 
 use crate::{convert_batch, FieldSpec};
 
@@ -49,13 +50,19 @@ pub fn arrow_schema_fields(schema: PySchema) -> Vec<(String, bool)> {
     schema_fields(&schema.into_inner())
 }
 
-/// One pass over Arrow input: a single RecordBatch (`__arrow_c_array__`) or a
-/// stream of them (`__arrow_c_stream__`: a pyarrow Table or RecordBatchReader,
-/// a Polars DataFrame, a nanoarrow stream, ...).
+/// One pass over Arrow input: a single RecordBatch or struct array
+/// (`__arrow_c_array__`) or a stream of them (`__arrow_c_stream__`: a pyarrow
+/// Table, RecordBatchReader or struct ChunkedArray, a Polars DataFrame, a
+/// nanoarrow stream, ...).
 ///
 /// The stream is opened once, so a one-shot source such as a RecordBatchReader
 /// is read exactly once: its schema here, then its batches via `convert_next`
 /// (lazily, for `iter()`) or `convert_all`.
+///
+/// Both protocols carry record batches as struct arrays. They are read as
+/// arrays rather than through pyo3-arrow's RecordBatch import, which panics on
+/// a struct array with null rows (or, for streams, drops the nulls), so that a
+/// null row raises a ValueError instead.
 ///
 /// Sendable, because an `iter()` generator holds one across `next()` calls,
 /// and those can run on different threads (e.g. Starlette's threadpool for a
@@ -63,26 +70,59 @@ pub fn arrow_schema_fields(schema: PySchema) -> Vec<(String, bool)> {
 /// it is only reached through `&mut self`, so it is never actually locked.
 #[pyclass]
 pub struct ArrowInput {
-    reader: Mutex<Option<Box<dyn RecordBatchReader + Send>>>,
+    reader: Mutex<Option<Box<dyn ArrayReader + Send>>>,
     schema: SchemaRef,
 }
 
 impl ArrowInput {
-    fn next_batch(&mut self) -> PyResult<Option<RecordBatch>> {
+    fn from_reader(data: &Bound<'_, PyAny>, reader: Box<dyn ArrayReader + Send>) -> PyResult<Self> {
+        let DataType::Struct(fields) = reader.field().data_type().clone() else {
+            return Err(unsupported_input(data, None));
+        };
+        Ok(ArrowInput {
+            reader: Mutex::new(Some(reader)),
+            schema: SchemaRef::new(Schema::new(fields)),
+        })
+    }
+
+    /// The next record batch. The read itself runs without the GIL: for a lazy
+    /// reader (an ADBC cursor, a Flight stream) that is where the I/O happens.
+    /// A reader backed by Python code takes the GIL again itself.
+    fn next_batch(&mut self, py: Python<'_>) -> PyResult<Option<RecordBatch>> {
         let reader = self
             .reader
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match reader.as_mut().and_then(|r| r.next()) {
+        let next = match reader.as_mut() {
+            Some(r) => py.detach(|| r.next()),
+            None => None,
+        };
+        let array = match next {
             None => {
                 *reader = None;
-                Ok(None)
+                return Ok(None);
             }
-            Some(Ok(batch)) => Ok(Some(batch)),
-            Some(Err(e)) => Err(PyValueError::new_err(format!(
-                "Failed to read the next Arrow record batch: {e}"
-            ))),
+            Some(Ok(array)) => array,
+            Some(Err(e)) => {
+                return Err(PyValueError::new_err(format!(
+                    "Failed to read the next Arrow record batch: {e}"
+                )))
+            }
+        };
+        let Some(struct_array) = array.as_any().downcast_ref::<StructArray>() else {
+            return Err(PyValueError::new_err(
+                "Arrow stream yielded a non-struct array; expected record batches",
+            ));
+        };
+        if struct_array.null_count() > 0 {
+            return Err(PyValueError::new_err(format!(
+                "Cannot convert a struct array with null rows ({} of {} rows are null): \
+                 a null row has no field values to build a model from. Filter them out first.",
+                struct_array.null_count(),
+                struct_array.len()
+            )));
         }
+        Ok(Some(RecordBatch::from(struct_array.clone())))
     }
 }
 
@@ -91,29 +131,21 @@ impl ArrowInput {
     #[new]
     fn new(data: &Bound<'_, PyAny>) -> PyResult<Self> {
         let py = data.py();
-        // A RecordBatch exports both protocols; read it as one batch. A plain
-        // Array also has `__arrow_c_array__`, but it is not a struct of columns.
+        // A RecordBatch exports both protocols; read it as one batch.
         if data.hasattr(pyo3::intern!(py, "__arrow_c_array__"))? {
-            if let Ok(batch) = data.extract::<PyRecordBatch>() {
-                let batch = batch.into_inner();
-                let schema = batch.schema();
-                let reader = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
-                return Ok(ArrowInput {
-                    reader: Mutex::new(Some(Box::new(reader))),
-                    schema,
-                });
-            }
+            let (array, field) = data
+                .extract::<PyArray>()
+                .map_err(|e| unsupported_input(data, Some(e.to_string())))?
+                .into_inner();
+            let reader = ArrayIterator::new(vec![Ok(array)], field);
+            return Self::from_reader(data, Box::new(reader));
         }
         if data.hasattr(pyo3::intern!(py, "__arrow_c_stream__"))? {
             let reader = data
-                .extract::<PyRecordBatchReader>()
+                .extract::<PyArrayReader>()
                 .map_err(|e| unsupported_input(data, Some(e.to_string())))?
                 .into_reader()?;
-            let schema = reader.schema();
-            return Ok(ArrowInput {
-                reader: Mutex::new(Some(reader)),
-                schema,
-            });
+            return Self::from_reader(data, reader);
         }
         Err(unsupported_input(data, None))
     }
@@ -131,7 +163,7 @@ impl ArrowInput {
         field_specs: Vec<FieldSpec>,
         validate: bool,
     ) -> PyResult<Option<PyObject>> {
-        let Some(batch) = self.next_batch()? else {
+        let Some(batch) = self.next_batch(py)? else {
             return Ok(None);
         };
         let mut results = Vec::with_capacity(batch.num_rows());
@@ -158,7 +190,7 @@ impl ArrowInput {
         // Resolve the constructor once and reuse it across all batches.
         let constructor = crate::make_constructor(py, &model_cls, &field_specs, validate)?;
         let mut results = Vec::new();
-        while let Some(batch) = self.next_batch()? {
+        while let Some(batch) = self.next_batch(py)? {
             results.reserve(batch.num_rows());
             convert_batch(
                 py,

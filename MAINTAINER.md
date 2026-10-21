@@ -121,7 +121,7 @@ arrowmodel/
 ### Data flow
 
 1. Python calls `ArrowModelConverter.convert(data)` or `ArrowModel.convert(data)` (or `iter`).
-2. Python opens the input with `_core.ArrowInput(data)` (`stream.rs`). It accepts anything exporting `__arrow_c_array__` (a RecordBatch or struct array) or `__arrow_c_stream__` (a Table, RecordBatchReader, Polars DataFrame, nanoarrow stream) via pyo3-arrow's Arrow C Data Interface, and raises `TypeError` for anything else. The stream is opened once, so a one-shot reader is read once.
+2. Python opens the input with `_core.ArrowInput(data)` (`stream.rs`). It accepts anything exporting `__arrow_c_array__` (a RecordBatch or struct array) or `__arrow_c_stream__` (a Table, RecordBatchReader, Polars DataFrame, nanoarrow stream) via pyo3-arrow's Arrow C Data Interface, and raises `TypeError` for anything else. Both are read as struct arrays (not through pyo3-arrow's RecordBatch import, which panics on, or for streams drops, null rows), so a null row raises `ValueError`. The stream is opened once, so a one-shot reader is read once, and each read runs with the GIL released.
 3. Python resolves the Arrow schema (`ArrowInput.fields()`) to Pydantic field specs (column index, field name, nested model class) before any batch is read.
 4. `convert` calls `ArrowInput.convert_all()`; `iter` calls `ArrowInput.convert_next()` once per batch, so a stream is read lazily.
 5. Rust iterates rows, extracting values from each column based on Arrow DataType.
