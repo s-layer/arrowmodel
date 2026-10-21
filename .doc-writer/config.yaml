@@ -28,7 +28,7 @@ tone: "personality"
 use_cases:
   - title: "Serialize Arrow data to JSON API responses"
     problem: "Data arrives in Arrow format (e.g. ADBC query results) and needs to be converted to structured Python objects for a JSON API response"
-    capability: "arrowmodel converts Arrow RecordBatch/Table directly to Pydantic model instances via a tight Rust loop over Arrow buffers -- no intermediate Python dicts, typically 2x faster than pure-Python approaches"
+    capability: "arrowmodel converts Arrow RecordBatch/Table directly to Pydantic model instances via a tight Rust loop over Arrow buffers -- no intermediate Python dicts, typically about 3x faster for flat schemas than pure-Python approaches"
     outcome: "Arrow query results are efficiently materialized as validated Pydantic models, ready to serialize as JSON API responses, with significantly less latency and allocation pressure"
 
 use_cases_section: false

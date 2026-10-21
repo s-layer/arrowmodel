@@ -23,6 +23,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: cargo-fmt
+        name: Rust formatting (cargo fmt)
+        entry: cargo fmt --manifest-path rust/Cargo.toml --check
+        language: system
+        files: ^rust/.*\.rs$
+        pass_filenames: false
+
       - id: basedpyright
         name: Type checking (basedpyright)
         entry: uv run basedpyright

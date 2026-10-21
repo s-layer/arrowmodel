@@ -1,48 +1,52 @@
 # Page Inventory
 
-**Generated:** 2026-04-04
+**Generated:** 2026-10-21
 **Doc system:** sphinx-shibuya (RST)
 **Navigation:** Sidebar only
-**API Reference:** sphinx-autoapi (replaces Reference section -- no manual reference pages)
+**API Reference:** sphinx-autoapi (`autoapi_root = "reference/api"`) plus the hand-written `docs/reference/api.rst`
+**Scope:** release 1.1.0. Content refresh for stream input (`__arrow_c_stream__`) and the unsupported-input `TypeError`. See `.doc-writer/gap-report.md` for the behaviour list and source/test references.
 
 ## Proposed Documentation
 
+No new pages. The new feature fits inside the existing "How to Iterate over Large Datasets" guide and the API reference. A separate "How to convert a RecordBatchReader" page would duplicate the iterate page. This is a refresh-only pass.
+
+## Content Refresh
+
+Wording to use across pages, for consistency:
+
+- Accepted input: "a `RecordBatch` or `Table`, or any Arrow stream of record batches, such as a `RecordBatchReader`, a Polars `DataFrame` or a nanoarrow array stream". Technical form for the reference: "anything exporting `__arrow_c_array__` (a record batch) or `__arrow_c_stream__` (a stream of record batches)".
+- Rejected input: "a plain `Array`, a non-struct `ChunkedArray`, a Polars `Series` or `LazyFrame`, or a list of dicts raises `TypeError`".
+- One-shot: "A `RecordBatchReader` can be read only once. Converting it again returns an empty list, as `reader.read_all()` would."
+
 | # | Type | Title | Key Sections | File Path |
 |---|------|-------|--------------|-----------|
-| 1 | (landing) | Overview | Project intro, feature highlights (grid/cards), quick install, quick example, section navigation | docs/index.rst |
-| 2 | tutorial | Getting Started | Prerequisites, installation (pip/uv tabs), define a model, create Arrow data, convert to models, what you learned | docs/tutorials/getting-started.rst |
-| 3 | tutorial | Tutorials (index) | Section intro, child page links with abstracts, hidden toctree | docs/tutorials/index.rst |
-| 4 | how-to | How to Choose an API Style | Problem context, three styles (functional, converter, ArrowModel base class), when to use each, comparison table | docs/how-to/choose-api-style.rst |
-| 5 | how-to | How to Use Validated Mode | When to validate, enabling validate=True, what validation catches, performance trade-off, error handling | docs/how-to/use-validated-mode.rst |
-| 6 | how-to | How to Work with Aliases | Pydantic alias resolution, validation_alias vs alias vs field_name, populate_by_name, unsupported alias types | docs/how-to/work-with-aliases.rst |
-| 7 | how-to | How to Convert Nested Models | Arrow Struct columns, defining nested Pydantic models, Optional nested models, null struct handling | docs/how-to/convert-nested-models.rst |
-| 8 | how-to | How to Iterate over Large Datasets | Memory problem, model_iter / converter.iter / ArrowModel.iter, batch-at-a-time semantics, streaming patterns | docs/how-to/iterate-large-datasets.rst |
-| 9 | how-to | How to Integrate with FastAPI | ADBC/Flight SQL query, convert to Pydantic, return from endpoint, reusing converters, validated mode for untrusted data | docs/how-to/integrate-fastapi.rst |
-| 10 | how-to | How-To Guides (index) | Section intro, child page links with abstracts, hidden toctree | docs/how-to/index.rst |
-| 11 | explanation | Understanding Fast Path vs Validated Path | What each path does, how model_construct works, how model_validate_json works, when to use which, performance characteristics, diagram | docs/explanation/fast-vs-validated.rst |
-| 12 | explanation | Arrow Type Mappings | Full type mapping table (Arrow type -> Python type), temporal types, nested types, binary types, interval types, unsupported types | docs/explanation/type-mappings.rst |
-| 13 | explanation | Explanation (index) | Section intro, child page links with abstracts, hidden toctree | docs/explanation/index.rst |
-| 14 | (section-index) | Reference (index) | Section intro, link to autoapi-generated API docs, hidden toctree including api/index | docs/reference/index.rst |
-| 15 | (readme) | README.md | Title, badges, description, quick start, key features, input compatibility, license | README.md |
-| 16 | (maintainer) | MAINTAINER.md | Dev setup, common tasks, architecture overview, CI/CD, release process, decision log | MAINTAINER.md |
+| 1 | (refresh) | How to Iterate over Large Datasets | **Rewrite section "Stream from a RecordBatchReader"** (now wrong). Pass the reader straight to `iter()`, e.g. `reader = cur.fetch_record_batch()` then `for user in User.iter(reader): ...`. Drop the manual `for batch in reader` loop and the `ValueError` claim. State: batches are pulled from the reader only as you iterate, so memory stays bounded by one batch even while the query is still streaming; `convert(reader)` reads every batch into one list (like `read_all()`); the reader is one-shot (second conversion returns `[]`); keep the cursor/connection open until iteration finishes; a missing required column raises `ValueError` from the schema before any batch is read. Make the first example self-contained with `pa.RecordBatchReader.from_batches(...)` (test-derived), then show the ADBC line as the real-world source. **Also update:** intro paragraph and meta description (Tables → "Tables and Arrow streams"); "How batch-at-a-time works" (steps apply to any stream; the "largest single batch" sentence applies to readers too); the `.. note::` ("lazy advantage only appears with multi-batch Tables" → multi-batch Tables and streams). Optional: one-line Polars mention (a Polars `DataFrame` also works with `iter`). Add a short "Unsupported input" note: a non-record-batch object raises `TypeError` on the first `next()` because `iter` is a generator. | docs/how-to/iterate-large-datasets.rst |
+| 2 | (refresh) | API Reference (hand-written) | **Signatures:** change `data: pa.RecordBatch \| pa.Table` to `data: ArrowData` in all six (ArrowModel.convert/iter, ArrowModelConverter.convert/iter, model_convert, model_iter). **Parameter rows:** type `ArrowData`; description "A `RecordBatch` or `Table`, or any Arrow stream of record batches (`RecordBatchReader`, Polars `DataFrame`, nanoarrow array stream). Anything exporting `__arrow_c_array__` or `__arrow_c_stream__` via the Arrow PyCapsule Interface. A `RecordBatchReader` is consumed." Keep the existing PyCapsule link on ArrowModel.convert; keep the "schema is cross-referenced on each call" sentence on ArrowModelConverter.convert. **Summary lines:** ArrowModel.convert "Convert an Arrow `RecordBatch` or `Table`…" → "Convert Arrow data…". ArrowModelConverter.iter: "For `Table` input with multiple chunks, only one `RecordBatch` is materialised at a time" → covers streams: batches are read one at a time as you iterate. **Raises (all six):** add "`TypeError` -- `data` is not Arrow record-batch data (e.g. a plain `Array`, a non-struct `ChunkedArray`, a Polars `Series`, a list of dicts). The message names the type passed." For the three `iter` entries, add one sentence that errors are raised on the first `next()`. For the `ValueError`, add "raised from the schema, before any batch is read". **Examples:** in ArrowModelConverter.convert, after "Tables work too", add a `RecordBatchReader` / Polars line. **New section "Input types"** (before `_build_field_map`): `ArrowData`, `ArrowArrayExportable`, `ArrowStreamExportable` with one line each and a short annotation example (`def load(data: ArrowData) -> list[User]: ...`). For `ArrowSchemaExportable`, one line: types a schema object (`__arrow_c_schema__`) and is not accepted as `data`. Also add the new section to the page's `.. contents::` via headings (automatic). | docs/reference/api.rst |
+| 3 | (readme) | README.md | **"Input Compatibility":** pyarrow → `RecordBatch`, `Table`, `RecordBatchReader` (read lazily by `iter()`); Polars → `DataFrame`; nanoarrow → struct arrays and array streams (not "arrays and record batches"); add "any other object exporting `__arrow_c_array__` or `__arrow_c_stream__`, e.g. an ADBC cursor's `fetch_record_batch()`". Add one sentence: anything else (a plain `Array`, a Polars `Series`, a list of dicts) raises `TypeError`. Keep "No pyarrow dependency is required at runtime." **"Lazy iteration" bullet:** add "including from a `RecordBatchReader`, so a streaming query result never has to fit in memory". Intro line 9 ("walk Arrow `RecordBatch` and `Table` buffers") can stay. **Benchmark links (lines 9, 54):** must point at `benchmarks/results-v1.1.0-2026-10-21.txt`. Parent agent is updating these and the numbers, so do not touch them in the write pass. | README.md |
+| 4 | (refresh) | Overview (landing) | "Any Arrow Source" card: "Accepts any Arrow record batch or stream -- pyarrow `Table` and `RecordBatchReader`, Polars `DataFrame`, nanoarrow -- via the Arrow PyCapsule Interface." Optionally link the card to `how-to-iterate-large-datasets`. Nothing else on the page changes. | docs/index.rst |
+| 5 | (refresh) | How to Integrate with FastAPI | "Stream large results": add a short follow-on (keep the existing `fetch_arrow_table()` example). To avoid holding the full result, pass `cur.fetch_record_batch()` to `Product.iter()`, and open the connection and cursor **inside** the generator so they stay open while `StreamingResponse` sends rows. Show that variant as a second code block. Link to :ref:`how-to-iterate-large-datasets`. Prerequisites line and the rest of the page are accurate. | docs/how-to/integrate-fastapi.rst |
+| 6 | (refresh) | How to Use arrowmodel with poldantic | Add one `.. note::` under "Why this works without pyarrow": a `DataFrame` is accepted, but a `LazyFrame` or `Series` raises `TypeError`. Call `.collect()` first, or wrap a `Series` with `.to_frame()`. Optional: say a `DataFrame` can be converted more than once (unlike a reader). Rest accurate. | docs/how-to/use-with-poldantic.rst |
+| 7 | (refresh) | Getting Started | Minor. "What you learned" bullet: "converts a `RecordBatch` or `Table`" → add "(or any Arrow stream, such as a `RecordBatchReader` or a Polars `DataFrame`)". Optionally add `how-to-iterate-large-datasets` to "Next steps". The rest is accurate. | docs/tutorials/getting-started.rst |
+| 8 | (refresh) | Understanding Fast Path vs Validated Path | Benchmark results link (line 148) must point at `benchmarks/results-v1.1.0-2026-10-21.txt`. Parent agent is updating the link and numbers, so no write-pass change. No other change from this release. | docs/explanation/fast-vs-validated.rst |
+| 9 | (refresh) | How to Use arrowmodel with pandera | No changes needed. The Polars tip ("pass the Polars DataFrame directly to `model_convert`") is accurate and now covered by tests. | docs/how-to/use-with-pandera.rst |
+| 10 | (refresh) | Arrow Type Mappings | No changes needed. The Map-column `TypeError` and the missing-column `ValueError` statements have no source caveat, and in 1.1.0 they hold for every source (the Map guard was pyarrow-only before). | docs/explanation/type-mappings.rst |
+| 11 | (maintainer) | MAINTAINER.md | Optional, include only if the user wants it in this pass. "Data flow" steps 3-4 name removed functions (`_core.convert_record_batch[_validated]`). Replace with `_core.ArrowInput(data)` → `.fields()` (schema, before any batch) → `.convert_all()` / `.convert_next()` (one batch at a time). Add `rust/src/stream.rs` and `tests/test_stream_input.py` to the directory tree. Add the input type aliases to the `__init__.py` comment. Add a design-decision bullet: one `ArrowInput` per call; the stream is opened once, so one-shot readers are read exactly once. | MAINTAINER.md |
 
 ## API Reference Status
 
-**Detected:** sphinx-autoapi is configured in the project. Autoapi output will be placed under `reference/api/` via `autoapi_root = "reference/api"` in conf.py. The doc-author will NOT write manual reference pages -- docstrings in `src/arrowmodel/__init__.py` and `src/arrowmodel/_core.pyi` are the source of truth. Inline code mentions of public symbols will use `:py:func:`, `:py:class:`, and `:py:meth:` roles to auto-link to autoapi pages.
+**Detected:** sphinx-autoapi (`docs/conf.py`: `autoapi_dirs = ["../src/arrowmodel"]`, `autoapi_root = "reference/api"`), plus the hand-written `docs/reference/api.rst`.
+
+The four new names (`ArrowData`, `ArrowArrayExportable`, `ArrowStreamExportable`, `ArrowSchemaExportable`) are in `__all__` with docstrings, so autoapi publishes them. Cross-reference them as `:py:data:`~arrowmodel.ArrowData`` and `:py:class:`~arrowmodel.ArrowStreamExportable`` (etc.). The Editor should check that the targets resolve after `just docs-build` / the Sphinx build. A `TypeAlias` may render under `data` or `attribute`.
+
+Source-docstring staleness that autoapi will render (not a docs-page edit; flag to the maintainer): `ArrowModel.convert` / `ArrowModel.iter` docstrings still say "Arrow RecordBatch or Table" in the summary and the `data:` arg, and the `ArrowModelConverter` class docstring says "Convert Arrow RecordBatch data".
 
 ## Audience Targeting
 
-All pages target the single configured persona: **Python backend engineers** (intermediate-advanced).
-
-- **Tutorials (#2):** Targets engineers new to arrowmodel specifically. Assumes Python, Arrow, and Pydantic knowledge but explains every arrowmodel API call.
-- **How-To Guides (#4-9):** Targets engineers actively integrating arrowmodel into a project. Task-oriented, assumes they have completed or could complete the tutorial.
-- **Explanation (#11-12):** Targets engineers who want to understand the "why" behind design decisions (fast path vs validated, type mapping rules). Useful for making informed choices about validation mode and debugging type conversion issues.
-- **README (#15):** Targets first-time visitors evaluating whether to adopt the library.
-- **MAINTAINER (#16):** Targets the project maintainer (future self reference).
+Every page targets the single configured persona, **Python backend engineers** (intermediate-advanced). They know `RecordBatchReader`, ADBC `fetch_record_batch()` and Polars `LazyFrame` vs `DataFrame`, so these need no definition. Explain the arrowmodel-specific behaviour: lazy pull, one-shot consumption, schema check before reading, `TypeError` for non-record-batch input.
 
 ## Coverage Gaps
 
-- **Polars/nanoarrow integration:** The library accepts any PyCapsule-compatible input but all examples and tests use pyarrow. A dedicated how-to for Polars DataFrame conversion could be added once real-world usage patterns emerge. The "Getting Started" tutorial and "Integrate with FastAPI" how-to will mention PyCapsule compatibility.
-- **Error handling reference:** The library raises `ValueError` (missing columns), `NotImplementedError` (unsupported alias types), and `ValidationError` (validated path). These are covered within the relevant how-to guides rather than a separate page, which is appropriate for the current API size.
-- **Performance tuning:** Benchmarks exist in `benchmarks/` but there is no dedicated "How to optimize performance" page. The fast-vs-validated explanation page covers the main performance decision. A dedicated page could be added if the API grows performance-relevant knobs.
-- **Rust internals:** The Rust core (`_core` module, `extract.rs`) is internal implementation. It is not documented in user-facing pages, as intended.
+- **ADBC reader is not tested.** No test covers `cur.fetch_record_batch()`. It returns a pyarrow `RecordBatchReader`, which is tested. Docs may show it as the real-world source, but the first runnable example in each section should use `pa.RecordBatchReader.from_batches(...)`.
+- **Errors mid-stream.** If a batch fails to read partway through a stream, the error is `ValueError("Failed to read the next Arrow record batch: ...")` (`stream.rs::next_batch`). No test covers it and no page mentions it. Optionally add one line to the iterate page's error notes. Low priority.
+- **Struct `ChunkedArray` / pyarrow `StructArray`** are accepted (checked by hand against the build) but not tested. Don't list them as supported in the README. "Any object exporting `__arrow_c_array__`/`__arrow_c_stream__` of record batches" covers them without promising more.
+- **Version references:** no docs page states the version number. `docs/conf.py` has no `version`/`release`. No page needs a 1.1.0 bump. Only the benchmark file links (rows 3 and 8) change, and the parent agent owns those.

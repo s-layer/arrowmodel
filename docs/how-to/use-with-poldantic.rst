@@ -100,10 +100,24 @@ Why this works without pyarrow
 
 Polars DataFrames expose the
 `Arrow PyCapsule Interface <https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html>`_,
-the same protocol pyarrow uses. arrowmodel accepts any PyCapsule-compatible
-input, so Polars DataFrames work directly -- no intermediate pyarrow conversion.
+the same protocol pyarrow uses. arrowmodel reads record batches through that
+protocol, so Polars DataFrames work directly -- no intermediate pyarrow conversion.
 
-.. tip::
+The same pattern works with any Arrow-PyCapsule-compatible library: pyarrow,
+Polars, nanoarrow, and others. A ``DataFrame`` hands arrowmodel a fresh Arrow
+stream on every call, so you can convert the same frame as many times as you
+like.
 
-   The same pattern works with any Arrow-PyCapsule-compatible library:
-   pyarrow, Polars, nanoarrow, and others.
+.. warning::
+
+   Only a ``DataFrame`` carries rows that arrowmodel can read. A ``LazyFrame``
+   is a query plan, not data, and a ``Series`` is a single column, so both
+   raise ``TypeError``. Call ``.collect()`` on a ``LazyFrame`` before
+   converting, and convert the ``DataFrame`` a ``Series`` came from rather
+   than the ``Series``:
+
+   .. code-block:: python
+
+      # Using User and df from the model-first example
+      lazy = df.lazy().filter(pl.col("score") > 7.5)
+      users = User.convert(lazy.collect())

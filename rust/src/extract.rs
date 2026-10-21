@@ -1,7 +1,7 @@
 use arrow_array::{
     cast::{
-        as_boolean_array, as_fixed_size_list_array, as_largestring_array, as_list_array,
-        as_large_list_array, as_map_array, as_primitive_array, as_string_array, as_struct_array,
+        as_boolean_array, as_fixed_size_list_array, as_large_list_array, as_largestring_array,
+        as_list_array, as_map_array, as_primitive_array, as_string_array, as_struct_array,
         as_union_array,
     },
     types::{
@@ -14,13 +14,16 @@ use arrow_array::{
         UInt8Type,
     },
     Array, BinaryArray, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray,
-    LargeBinaryArray, LargeStringArray, ListArray, LargeListArray, MapArray, StringArray,
+    LargeBinaryArray, LargeListArray, LargeStringArray, ListArray, MapArray, StringArray,
     StringViewArray, StructArray, UnionArray,
 };
 use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyTime, PyTuple};
+use pyo3::types::{PyBytes, PyList, PyString, PyTime, PyTuple};
 use serde_json::{Map, Number, Value};
+use std::sync::Arc;
+
+use crate::construct::{ModelConstructor, SharedConstructor};
 
 type PyObject = Py<PyAny>;
 
@@ -61,7 +64,7 @@ pub enum ColumnExtractor<'a> {
     Struct(
         &'a StructArray,
         Vec<(Py<PyString>, ColumnExtractor<'a>)>,
-        PyObject, // nested Pydantic model class
+        SharedConstructor, // builds the nested Pydantic model instances
     ),
     // Extended scalar types
     Float16(&'a arrow_array::Float16Array),
@@ -111,13 +114,18 @@ fn import_decimal_cls(py: Python<'_>) -> PyResult<PyObject> {
 /// the per-row rebuild of container child extractors (List/Map over a Struct)
 /// does **no** Python introspection: the model class for each Struct and the
 /// per-field child plans are resolved a single time up front, not once per row.
+///
+/// Cloning is cheap (no Python calls): each Struct's constructor is shared by
+/// `Arc`. Used when an owned child plan must be stored inside a per-row-built
+/// container extractor.
+#[derive(Clone)]
 pub enum ModelPlan {
     /// No nested model anywhere in this subtree (scalar columns, unions, etc.).
     None,
-    /// A Struct: its Pydantic model class plus a per-field child plan, in Arrow
+    /// A Struct: its model constructor plus a per-field child plan, in Arrow
     /// field order (aligned positionally with `DataType::Struct(fields)`).
     Struct {
-        model: PyObject,
+        constructor: SharedConstructor,
         children: Vec<ModelPlan>,
     },
     /// A single-child container (List / LargeList / FixedSizeList): the element
@@ -125,25 +133,6 @@ pub enum ModelPlan {
     List(Box<ModelPlan>),
     /// A Map: the key plan and the value plan.
     Map(Box<ModelPlan>, Box<ModelPlan>),
-}
-
-impl ModelPlan {
-    /// Deep-clone the plan, incrementing the refcount of each held model class.
-    /// Cheap (no Python calls / imports) — used when an owned child plan must be
-    /// stored inside a per-row-built container extractor.
-    fn clone_ref(&self, py: Python<'_>) -> ModelPlan {
-        match self {
-            ModelPlan::None => ModelPlan::None,
-            ModelPlan::Struct { model, children } => ModelPlan::Struct {
-                model: model.clone_ref(py),
-                children: children.iter().map(|c| c.clone_ref(py)).collect(),
-            },
-            ModelPlan::List(inner) => ModelPlan::List(Box::new(inner.clone_ref(py))),
-            ModelPlan::Map(k, v) => {
-                ModelPlan::Map(Box::new(k.clone_ref(py)), Box::new(v.clone_ref(py)))
-            }
-        }
-    }
 }
 
 /// Build the [`ModelPlan`] for a column subtree once, resolving the nested
@@ -191,8 +180,11 @@ fn build_model_plan(
                     child_nested_model.as_ref(),
                 )?);
             }
+            // Resolve how to build instances from this Struct's fields once.
+            let keys: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
+            let constructor = Arc::new(ModelConstructor::new(py, model_cls.bind(py), &keys)?);
             Ok(ModelPlan::Struct {
-                model: model_cls,
+                constructor,
                 children,
             })
         }
@@ -223,18 +215,18 @@ fn build_model_plan(
 
 /// Owned element plan for a single-child container (List/LargeList/
 /// FixedSizeList). `ModelPlan::None` when the plan carries no nested model.
-fn list_element_plan(plan: &ModelPlan, py: Python<'_>) -> ModelPlan {
+fn list_element_plan(plan: &ModelPlan) -> ModelPlan {
     match plan {
-        ModelPlan::List(inner) => inner.clone_ref(py),
+        ModelPlan::List(inner) => inner.as_ref().clone(),
         _ => ModelPlan::None,
     }
 }
 
 /// Owned (key, value) plans for a Map. `(None, None)` when the plan carries no
 /// nested model.
-fn map_kv_plans(plan: &ModelPlan, py: Python<'_>) -> (ModelPlan, ModelPlan) {
+fn map_kv_plans(plan: &ModelPlan) -> (ModelPlan, ModelPlan) {
     match plan {
-        ModelPlan::Map(k, v) => (k.clone_ref(py), v.clone_ref(py)),
+        ModelPlan::Map(k, v) => (k.as_ref().clone(), v.as_ref().clone()),
         _ => (ModelPlan::None, ModelPlan::None),
     }
 }
@@ -288,20 +280,28 @@ fn prepare_extractor_with_plan<'a>(
         DataType::Int32 => Ok(ColumnExtractor::Int32(as_primitive_array::<Int32Type>(col))),
         DataType::Int64 => Ok(ColumnExtractor::Int64(as_primitive_array::<Int64Type>(col))),
         DataType::UInt8 => Ok(ColumnExtractor::UInt8(as_primitive_array::<UInt8Type>(col))),
-        DataType::UInt16 => Ok(ColumnExtractor::UInt16(as_primitive_array::<UInt16Type>(col))),
-        DataType::UInt32 => Ok(ColumnExtractor::UInt32(as_primitive_array::<UInt32Type>(col))),
-        DataType::UInt64 => Ok(ColumnExtractor::UInt64(as_primitive_array::<UInt64Type>(col))),
-        DataType::Float32 => Ok(ColumnExtractor::Float32(as_primitive_array::<Float32Type>(col))),
-        DataType::Float64 => Ok(ColumnExtractor::Float64(as_primitive_array::<Float64Type>(col))),
+        DataType::UInt16 => Ok(ColumnExtractor::UInt16(as_primitive_array::<UInt16Type>(
+            col,
+        ))),
+        DataType::UInt32 => Ok(ColumnExtractor::UInt32(as_primitive_array::<UInt32Type>(
+            col,
+        ))),
+        DataType::UInt64 => Ok(ColumnExtractor::UInt64(as_primitive_array::<UInt64Type>(
+            col,
+        ))),
+        DataType::Float32 => Ok(ColumnExtractor::Float32(as_primitive_array::<Float32Type>(
+            col,
+        ))),
+        DataType::Float64 => Ok(ColumnExtractor::Float64(as_primitive_array::<Float64Type>(
+            col,
+        ))),
         DataType::Boolean => Ok(ColumnExtractor::Boolean(as_boolean_array(col))),
         DataType::Utf8 => Ok(ColumnExtractor::Utf8(as_string_array(col))),
         DataType::LargeUtf8 => Ok(ColumnExtractor::LargeUtf8(as_largestring_array(col))),
-        DataType::Date32 => Ok(ColumnExtractor::Date32(
-            as_primitive_array::<Date32Type>(col),
-        )),
-        DataType::Timestamp(unit, None) => {
-            Ok(ColumnExtractor::TimestampNaive(col, *unit))
-        }
+        DataType::Date32 => Ok(ColumnExtractor::Date32(as_primitive_array::<Date32Type>(
+            col,
+        ))),
+        DataType::Timestamp(unit, None) => Ok(ColumnExtractor::TimestampNaive(col, *unit)),
         DataType::Timestamp(unit, Some(tz_str)) => {
             let zoneinfo = py.import("zoneinfo")?;
             let zi_cls = zoneinfo.getattr("ZoneInfo")?;
@@ -314,7 +314,7 @@ fn prepare_extractor_with_plan<'a>(
             Ok(ColumnExtractor::List(
                 arr,
                 field.data_type().clone(),
-                list_element_plan(plan, py),
+                list_element_plan(plan),
             ))
         }
         DataType::LargeList(field) => {
@@ -322,14 +322,17 @@ fn prepare_extractor_with_plan<'a>(
             Ok(ColumnExtractor::LargeList(
                 arr,
                 field.data_type().clone(),
-                list_element_plan(plan, py),
+                list_element_plan(plan),
             ))
         }
         DataType::Struct(fields) => {
             // The model and each field's child plan were resolved once by
             // build_model_plan; read them here without touching Python.
-            let (model_cls, child_plans) = match plan {
-                ModelPlan::Struct { model, children } => (model.clone_ref(py), children),
+            let (constructor, child_plans) = match plan {
+                ModelPlan::Struct {
+                    constructor,
+                    children,
+                } => (Arc::clone(constructor), children),
                 _ => return Err(struct_no_model_err(fields)),
             };
             let struct_arr = as_struct_array(col);
@@ -350,12 +353,12 @@ fn prepare_extractor_with_plan<'a>(
                 let field_name = PyString::intern(py, field.name()).unbind();
                 children.push((field_name, child_ext));
             }
-            Ok(ColumnExtractor::Struct(struct_arr, children, model_cls))
+            Ok(ColumnExtractor::Struct(struct_arr, children, constructor))
         }
         // Extended scalar types
-        DataType::Float16 => Ok(ColumnExtractor::Float16(
-            as_primitive_array::<Float16Type>(col),
-        )),
+        DataType::Float16 => Ok(ColumnExtractor::Float16(as_primitive_array::<Float16Type>(
+            col,
+        ))),
         DataType::Decimal128(_, _) => Ok(ColumnExtractor::Decimal128(
             col.as_any()
                 .downcast_ref::<arrow_array::Decimal128Array>()
@@ -381,9 +384,9 @@ fn prepare_extractor_with_plan<'a>(
             import_decimal_cls(py)?,
         )),
         // Extended temporal types
-        DataType::Date64 => Ok(ColumnExtractor::Date64(
-            as_primitive_array::<Date64Type>(col),
-        )),
+        DataType::Date64 => Ok(ColumnExtractor::Date64(as_primitive_array::<Date64Type>(
+            col,
+        ))),
         DataType::Time32(unit) => Ok(ColumnExtractor::Time32(col, *unit)),
         DataType::Time64(unit) => Ok(ColumnExtractor::Time64(col, *unit)),
         // Binary types
@@ -415,16 +418,20 @@ fn prepare_extractor_with_plan<'a>(
         )),
         DataType::Null => Ok(ColumnExtractor::Null),
         // Interval types
-        DataType::Interval(IntervalUnit::YearMonth) => Ok(ColumnExtractor::IntervalYearMonth(
-            as_primitive_array::<IntervalYearMonthType>(col),
-        )),
-        DataType::Interval(IntervalUnit::DayTime) => Ok(ColumnExtractor::IntervalDayTime(
-            as_primitive_array::<IntervalDayTimeType>(col),
-        )),
+        DataType::Interval(IntervalUnit::YearMonth) => {
+            Ok(ColumnExtractor::IntervalYearMonth(as_primitive_array::<
+                IntervalYearMonthType,
+            >(col)))
+        }
+        DataType::Interval(IntervalUnit::DayTime) => {
+            Ok(ColumnExtractor::IntervalDayTime(as_primitive_array::<
+                IntervalDayTimeType,
+            >(col)))
+        }
         DataType::Interval(IntervalUnit::MonthDayNano) => {
-            Ok(ColumnExtractor::IntervalMonthDayNano(
-                as_primitive_array::<IntervalMonthDayNanoType>(col),
-            ))
+            Ok(ColumnExtractor::IntervalMonthDayNano(as_primitive_array::<
+                IntervalMonthDayNanoType,
+            >(col)))
         }
         // Container types
         DataType::FixedSizeList(field, _size) => {
@@ -432,7 +439,7 @@ fn prepare_extractor_with_plan<'a>(
             Ok(ColumnExtractor::FixedSizeList(
                 arr,
                 field.data_type().clone(),
-                list_element_plan(plan, py),
+                list_element_plan(plan),
             ))
         }
         DataType::Map(entries_field, _sorted) => {
@@ -440,8 +447,10 @@ fn prepare_extractor_with_plan<'a>(
             if let DataType::Struct(fields) = entries_field.data_type() {
                 let key_dt = fields[0].data_type().clone();
                 let val_dt = fields[1].data_type().clone();
-                let (key_plan, val_plan) = map_kv_plans(plan, py);
-                Ok(ColumnExtractor::Map(arr, key_dt, val_dt, key_plan, val_plan))
+                let (key_plan, val_plan) = map_kv_plans(plan);
+                Ok(ColumnExtractor::Map(
+                    arr, key_dt, val_dt, key_plan, val_plan,
+                ))
             } else {
                 Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                     "Map entries field is not a Struct",
@@ -632,19 +641,15 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(PyList::new(py, &items)?.into_any().unbind())
                 }
             }
-            ColumnExtractor::Struct(arr, children, model_cls) => {
+            ColumnExtractor::Struct(arr, children, constructor) => {
                 if arr.is_null(row) {
                     Ok(py.None()) // null struct -> None for entire nested model (Pitfall 4)
                 } else {
-                    let kwargs = PyDict::new(py);
-                    for (field_name, extractor) in children.iter() {
-                        let value = extractor.extract_value(py, row)?;
-                        kwargs.set_item(field_name.bind(py), value)?;
-                    }
-                    Ok(model_cls
-                        .bind(py)
-                        .call_method("model_construct", (), Some(&kwargs))?
-                        .unbind())
+                    let values = children
+                        .iter()
+                        .map(|(_, extractor)| extractor.extract_value(py, row))
+                        .collect::<PyResult<Vec<_>>>()?;
+                    constructor.build(py, values)
                 }
             }
             // --- Extended scalar types ---
@@ -652,7 +657,12 @@ impl<'a> ColumnExtractor<'a> {
                 if arr.is_null(row) {
                     Ok(py.None())
                 } else {
-                    Ok(arr.value(row).to_f32().into_pyobject(py)?.into_any().unbind())
+                    Ok(arr
+                        .value(row)
+                        .to_f32()
+                        .into_pyobject(py)?
+                        .into_any()
+                        .unbind())
                 }
             }
             ColumnExtractor::Decimal128(arr, decimal_cls) => {
@@ -707,14 +717,16 @@ impl<'a> ColumnExtractor<'a> {
                 } else {
                     match unit {
                         TimeUnit::Second => {
-                            let total_secs = as_primitive_array::<Time32SecondType>(*arr).value(row);
+                            let total_secs =
+                                as_primitive_array::<Time32SecondType>(*arr).value(row);
                             let h = (total_secs / 3600) as u8;
                             let m = ((total_secs % 3600) / 60) as u8;
                             let s = (total_secs % 60) as u8;
                             Ok(PyTime::new(py, h, m, s, 0, None)?.into_any().unbind())
                         }
                         TimeUnit::Millisecond => {
-                            let total_ms = as_primitive_array::<Time32MillisecondType>(*arr).value(row);
+                            let total_ms =
+                                as_primitive_array::<Time32MillisecondType>(*arr).value(row);
                             let total_secs = total_ms / 1000;
                             let us = ((total_ms % 1000) * 1000) as u32;
                             let h = (total_secs / 3600) as u8;
@@ -734,7 +746,8 @@ impl<'a> ColumnExtractor<'a> {
                 } else {
                     match unit {
                         TimeUnit::Microsecond => {
-                            let total_us = as_primitive_array::<Time64MicrosecondType>(*arr).value(row);
+                            let total_us =
+                                as_primitive_array::<Time64MicrosecondType>(*arr).value(row);
                             let total_secs = (total_us / 1_000_000) as i32;
                             let us = (total_us % 1_000_000) as u32;
                             let h = (total_secs / 3600) as u8;
@@ -743,7 +756,8 @@ impl<'a> ColumnExtractor<'a> {
                             Ok(PyTime::new(py, h, m, s, us, None)?.into_any().unbind())
                         }
                         TimeUnit::Nanosecond => {
-                            let total_ns = as_primitive_array::<Time64NanosecondType>(*arr).value(row);
+                            let total_ns =
+                                as_primitive_array::<Time64NanosecondType>(*arr).value(row);
                             let total_us = total_ns / 1000; // truncate to microsecond (Pitfall 4)
                             let total_secs = (total_us / 1_000_000) as i32;
                             let us = (total_us % 1_000_000) as u32;
@@ -801,11 +815,14 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(py.None())
                 } else {
                     let months = arr.value(row) as i64;
-                    let tuple = PyTuple::new(py, &[
-                        months.into_pyobject(py)?.into_any().unbind(),
-                        0i64.into_pyobject(py)?.into_any().unbind(),
-                        0i64.into_pyobject(py)?.into_any().unbind(),
-                    ])?;
+                    let tuple = PyTuple::new(
+                        py,
+                        &[
+                            months.into_pyobject(py)?.into_any().unbind(),
+                            0i64.into_pyobject(py)?.into_any().unbind(),
+                            0i64.into_pyobject(py)?.into_any().unbind(),
+                        ],
+                    )?;
                     Ok(tuple.into_any().unbind())
                 }
             }
@@ -816,11 +833,14 @@ impl<'a> ColumnExtractor<'a> {
                     let val = arr.value(row);
                     let (days, ms) = IntervalDayTimeType::to_parts(val);
                     let nanos = (ms as i64) * 1_000_000;
-                    let tuple = PyTuple::new(py, &[
-                        0i64.into_pyobject(py)?.into_any().unbind(),
-                        (days as i64).into_pyobject(py)?.into_any().unbind(),
-                        nanos.into_pyobject(py)?.into_any().unbind(),
-                    ])?;
+                    let tuple = PyTuple::new(
+                        py,
+                        &[
+                            0i64.into_pyobject(py)?.into_any().unbind(),
+                            (days as i64).into_pyobject(py)?.into_any().unbind(),
+                            nanos.into_pyobject(py)?.into_any().unbind(),
+                        ],
+                    )?;
                     Ok(tuple.into_any().unbind())
                 }
             }
@@ -832,11 +852,14 @@ impl<'a> ColumnExtractor<'a> {
                     let months = val.months as i64;
                     let days = val.days as i64;
                     let nanos = val.nanoseconds;
-                    let tuple = PyTuple::new(py, &[
-                        months.into_pyobject(py)?.into_any().unbind(),
-                        days.into_pyobject(py)?.into_any().unbind(),
-                        nanos.into_pyobject(py)?.into_any().unbind(),
-                    ])?;
+                    let tuple = PyTuple::new(
+                        py,
+                        &[
+                            months.into_pyobject(py)?.into_any().unbind(),
+                            days.into_pyobject(py)?.into_any().unbind(),
+                            nanos.into_pyobject(py)?.into_any().unbind(),
+                        ],
+                    )?;
                     Ok(tuple.into_any().unbind())
                 }
             }
@@ -893,8 +916,8 @@ impl<'a> ColumnExtractor<'a> {
                     let tid = arr.type_id(row);
                     let child = arr.child(tid);
                     let child_idx = match arr.offsets() {
-                        Some(_) => arr.value_offset(row) as usize, // Dense
-                        None => row,                                 // Sparse
+                        Some(_) => arr.value_offset(row), // Dense
+                        None => row,                      // Sparse
                     };
                     let child_dt = type_map
                         .iter()
@@ -905,8 +928,12 @@ impl<'a> ColumnExtractor<'a> {
                                 "Unknown union type_id: {tid}"
                             ))
                         })?;
-                    let child_ext =
-                        prepare_extractor_with_plan(py, child.as_ref(), child_dt, &ModelPlan::None)?;
+                    let child_ext = prepare_extractor_with_plan(
+                        py,
+                        child.as_ref(),
+                        child_dt,
+                        &ModelPlan::None,
+                    )?;
                     child_ext.extract_value(py, child_idx)
                 }
             }
@@ -1035,9 +1062,7 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(Value::Null)
                 } else {
                     match arr.value_as_date(row) {
-                        Some(d) => {
-                            Ok(Value::String(d.format("%Y-%m-%d").to_string()))
-                        }
+                        Some(d) => Ok(Value::String(d.format("%Y-%m-%d").to_string())),
                         None => Ok(Value::Null),
                     }
                 }
@@ -1048,9 +1073,7 @@ impl<'a> ColumnExtractor<'a> {
                 } else {
                     match extract_naive_dt_value(*arr, row, *unit) {
                         Some(dt) => {
-                            Ok(Value::String(
-                                dt.format("%Y-%m-%dT%H:%M:%S%.f").to_string(),
-                            ))
+                            Ok(Value::String(dt.format("%Y-%m-%dT%H:%M:%S%.f").to_string()))
                         }
                         None => Ok(Value::Null),
                     }
@@ -1120,7 +1143,7 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(Value::Array(items))
                 }
             }
-            ColumnExtractor::Struct(_arr, children, _model_cls) => {
+            ColumnExtractor::Struct(_arr, children, _constructor) => {
                 if _arr.is_null(row) {
                     Ok(Value::Null)
                 } else {
@@ -1186,9 +1209,7 @@ impl<'a> ColumnExtractor<'a> {
                     let nsec = (ms.rem_euclid(1000) as u32) * 1_000_000;
                     match chrono::DateTime::from_timestamp(secs, nsec) {
                         Some(utc) => Ok(Value::String(
-                            utc.naive_utc()
-                                .format("%Y-%m-%dT%H:%M:%S%.f")
-                                .to_string(),
+                            utc.naive_utc().format("%Y-%m-%dT%H:%M:%S%.f").to_string(),
                         )),
                         None => Ok(Value::Null),
                     }
@@ -1294,8 +1315,7 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(Value::Null)
                 } else {
                     use base64::Engine;
-                    let encoded =
-                        base64::engine::general_purpose::STANDARD.encode(arr.value(row));
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(arr.value(row));
                     Ok(Value::String(encoded))
                 }
             }
@@ -1304,8 +1324,7 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(Value::Null)
                 } else {
                     use base64::Engine;
-                    let encoded =
-                        base64::engine::general_purpose::STANDARD.encode(arr.value(row));
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(arr.value(row));
                     Ok(Value::String(encoded))
                 }
             }
@@ -1314,8 +1333,7 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(Value::Null)
                 } else {
                     use base64::Engine;
-                    let encoded =
-                        base64::engine::general_purpose::STANDARD.encode(arr.value(row));
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(arr.value(row));
                     Ok(Value::String(encoded))
                 }
             }
@@ -1332,8 +1350,7 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(Value::Null)
                 } else {
                     use base64::Engine;
-                    let encoded =
-                        base64::engine::general_purpose::STANDARD.encode(arr.value(row));
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(arr.value(row));
                     Ok(Value::String(encoded))
                 }
             }
@@ -1428,8 +1445,8 @@ impl<'a> ColumnExtractor<'a> {
                     let tid = arr.type_id(row);
                     let child = arr.child(tid);
                     let child_idx = match arr.offsets() {
-                        Some(_) => arr.value_offset(row) as usize, // Dense
-                        None => row,                                 // Sparse
+                        Some(_) => arr.value_offset(row), // Dense
+                        None => row,                      // Sparse
                     };
                     let child_dt = type_map
                         .iter()
@@ -1440,8 +1457,12 @@ impl<'a> ColumnExtractor<'a> {
                                 "Unknown union type_id: {tid}"
                             ))
                         })?;
-                    let child_ext =
-                        prepare_extractor_with_plan(py, child.as_ref(), child_dt, &ModelPlan::None)?;
+                    let child_ext = prepare_extractor_with_plan(
+                        py,
+                        child.as_ref(),
+                        child_dt,
+                        &ModelPlan::None,
+                    )?;
                     child_ext.extract_json_value(py, child_idx)
                 }
             }
@@ -1460,9 +1481,7 @@ fn extract_naive_datetime(
     unit: TimeUnit,
 ) -> PyResult<PyObject> {
     let naive_dt = match unit {
-        TimeUnit::Second => {
-            as_primitive_array::<TimestampSecondType>(arr).value_as_datetime(row)
-        }
+        TimeUnit::Second => as_primitive_array::<TimestampSecondType>(arr).value_as_datetime(row),
         TimeUnit::Millisecond => {
             as_primitive_array::<TimestampMillisecondType>(arr).value_as_datetime(row)
         }
@@ -1494,9 +1513,7 @@ fn extract_aware_datetime(
     tz_obj: &PyObject,
 ) -> PyResult<PyObject> {
     let naive_dt = match unit {
-        TimeUnit::Second => {
-            as_primitive_array::<TimestampSecondType>(arr).value_as_datetime(row)
-        }
+        TimeUnit::Second => as_primitive_array::<TimestampSecondType>(arr).value_as_datetime(row),
         TimeUnit::Millisecond => {
             as_primitive_array::<TimestampMillisecondType>(arr).value_as_datetime(row)
         }
@@ -1528,9 +1545,7 @@ fn extract_duration(
     unit: TimeUnit,
 ) -> PyResult<PyObject> {
     let td = match unit {
-        TimeUnit::Second => {
-            as_primitive_array::<DurationSecondType>(arr).value_as_duration(row)
-        }
+        TimeUnit::Second => as_primitive_array::<DurationSecondType>(arr).value_as_duration(row),
         TimeUnit::Millisecond => {
             as_primitive_array::<DurationMillisecondType>(arr).value_as_duration(row)
         }
@@ -1601,9 +1616,7 @@ fn extract_naive_dt_value(
     unit: TimeUnit,
 ) -> Option<chrono::NaiveDateTime> {
     match unit {
-        TimeUnit::Second => {
-            as_primitive_array::<TimestampSecondType>(arr).value_as_datetime(row)
-        }
+        TimeUnit::Second => as_primitive_array::<TimestampSecondType>(arr).value_as_datetime(row),
         TimeUnit::Millisecond => {
             as_primitive_array::<TimestampMillisecondType>(arr).value_as_datetime(row)
         }
@@ -1623,9 +1636,7 @@ fn extract_duration_value(
     unit: TimeUnit,
 ) -> Option<chrono::TimeDelta> {
     match unit {
-        TimeUnit::Second => {
-            as_primitive_array::<DurationSecondType>(arr).value_as_duration(row)
-        }
+        TimeUnit::Second => as_primitive_array::<DurationSecondType>(arr).value_as_duration(row),
         TimeUnit::Millisecond => {
             as_primitive_array::<DurationMillisecondType>(arr).value_as_duration(row)
         }

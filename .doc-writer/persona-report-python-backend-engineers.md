@@ -1,140 +1,110 @@
 # Persona Report
 
-**Generated:** 2026-04-04
+**Generated:** 2026-10-21 (pass for 1.1.0 stream input, commit 68b8e39)
 **Audience:** Python backend engineers (intermediate-advanced)
-**Scenarios tested:** 5
-**Results:** 5 PASS, 0 PARTIAL, 0 FAIL
+**Scenarios tested:** 7 (S1-S6 reused; S7 added for stream input)
+**Results:** 7 PASS, 0 PARTIAL, 0 FAIL
 
 ## Summary
 
-The arrowmodel documentation provides an excellent experience for a Python backend engineer discovering the library after hitting the `to_pylist()` + Pydantic construction bottleneck. The getting-started tutorial gets a user from zero to a working conversion in under 5 minutes with clear, realistic code examples. The how-to guides cover every common integration scenario (FastAPI, Polars, pandera, aliases, nested models, streaming) with complete, copy-pasteable code. The API reference is thorough, with full signatures, parameter tables, return types, exceptions, and examples for every public symbol. Navigation via the sidebar toctree is logical and well-organized, and cross-references between pages guide the user naturally from learning to doing.
+The 1.1.0 stream-input story holds up when I run it. Every snippet I tried in the changed pages ran as documented with arrowmodel 1.1.0, pyarrow 26, Polars, nanoarrow, poldantic, FastAPI and the ADBC SQLite driver. That covers reader iteration, read-once behaviour, the missing-column error raised before any batch is pulled, the `TypeError` for a plain `Array`, `LazyFrame`, `Series` or list of dicts, both FastAPI streaming variants, the broken "cursor closed first" variant (`ValueError: Failed to read the next Arrow record batch`), and the "200 then cut-off body" warning. All the previous pass's PARTIALs are resolved. What remains is low-severity friction. Nothing says the reader and stream input is new in 1.1.0. The `ArrowData` link lands on a garbled autoapi entry. The how-to index blurb doesn't mention streams. A couple of benchmark-prose ranges are looser than the linked results file.
+
+Code verification (run with `uv run python ...` / `uv run --with fastapi --with adbc-driver-sqlite --with httpx --with polars --with poldantic --with nanoarrow ...`):
+
+- `iterate-large-datasets.rst`: all blocks run and the printed output matches. A consumed reader returns `[]` from both `convert` and `iter`. A missing column raises `ValueError` on the first `next()` with 0 batches pulled. Closing the cursor before iterating raises `ValueError`. The `pa.array([1, 2, 3])` `TypeError` message matches the documented text exactly. A Polars `DataFrame` with several chunks iterates without importing pyarrow.
+- `integrate-fastapi.rst`: `/products` returns 200, `in_stock` comes back as `int64` from SQLite, and there is no serializer warning. The `bool` claim is confirmed: the fast path gives `1`/`0` plus a `PydanticSerializationUnexpectedValue` warning, and `validate=True` gives `True`/`False`. The Table streaming endpoint and the reader-inside-generator endpoint each streamed 5000 NDJSON rows. Opening the reader in the endpoint gives 200 with an empty body, and the server raises the documented `ValueError`. A missing column also gives 200 with an empty body.
+- `use-with-poldantic.rst`: model-first and schema-first both run. `LazyFrame` and `Series` raise `TypeError`, and `lazy.collect()` converts.
+- `reference/api.rst`: the `load_users(data: ArrowData)` example runs. StructArray, struct ChunkedArray, nanoarrow `ArrayStream` and nanoarrow struct array all convert.
+- `fast-vs-validated.rst`: the table numbers (100 / 1,000 / 38,000 rows) match `benchmarks/results-v1.1.0-2026-10-21.txt`.
 
 ---
 
-## Scenario S1: I want to install arrowmodel and convert an ADBC query result into Pydantic models for a FastAPI endpoint
+## Scenario S1: Install arrowmodel and convert an ADBC query result into Pydantic models for a FastAPI endpoint
 
 **Verdict:** PASS
 
 ### Navigation Path
 
-1. Started at: `docs/index.rst`
-   - Found: Clear project overview with realistic code example showing `ArrowModel` subclass and `convert()`. Installation section with pip/uv tabs. Explicit note that no Rust toolchain is needed.
-   - Followed: "Get Started" button linking to `:ref:getting-started`
-2. Navigated to: `docs/tutorials/getting-started.rst`
-   - Found: Step-by-step tutorial covering install, model definition, Arrow data creation, and `model_convert()` usage. Mentions ADBC/Flight SQL as real-world data sources. Complete code examples with expected output. "Next steps" section links to API style guide and validated mode.
-   - Type-alignment: Tutorial is learning-oriented -- exactly right for a first-use scenario. Teaches by doing without over-explaining concepts the persona already knows (Python, Arrow basics, Pydantic model definitions).
-   - Followed: Sidebar navigation to how-to guides
-3. Navigated to: `docs/how-to/index.rst`
-   - Found: Well-organized index with sections for "Choosing your API", "Conversion features", and "Integrations". Clear one-line descriptions for each guide.
-   - Followed: `:ref:how-to-integrate-fastapi`
-4. Navigated to: `docs/how-to/integrate-fastapi.rst`
-   - Found: Complete FastAPI integration guide showing ADBC query -> `ArrowModel.convert()` -> FastAPI response. Covers model definition, endpoint wiring, converter reuse, validated mode for untrusted data, and streaming large results. Code examples are realistic (ADBC SQLite connection, proper context managers, typed response_model).
-   - Type-alignment: How-to guide is goal-oriented -- exactly right for a task-focused engineer wanting to wire things up.
-
-No friction encountered. The full journey from "what is this library?" through "it's running in my FastAPI endpoint" is smooth and well-paced. Language is well-calibrated for the persona -- assumes Pydantic and Arrow knowledge, explains arrowmodel-specific APIs.
+1. Started at: `docs/index.rst`. I followed the Getting Started card to `tutorials/getting-started.rst` (install, first conversion, Next steps now link the iteration guide).
+2. Navigated to: `how-to/integrate-fastapi.rst` (through the how-to index). The model, endpoint and converter-reuse examples ran against a real SQLite DB. The `in_stock: int` rationale is clear and correct.
 
 ---
 
-## Scenario S2: I want to understand which Arrow types map to which Python types so I can define my Pydantic model fields correctly for a complex schema with timestamps, decimals, and nested structs
+## Scenario S2: Arrow to Python type mappings for timestamps, decimals and nested structs
+
+**Verdict:** PASS (pages unchanged by this commit; previous verdict carried, navigation re-checked)
+
+---
+
+## Scenario S3: Aliases for camelCase columns and snake_case fields
+
+**Verdict:** PASS (pages unchanged; the `AliasPath` wording is now consistent across the aliases how-to, the explanation and the reference)
+
+---
+
+## Scenario S4: Full API for ArrowModelConverter
 
 **Verdict:** PASS
 
 ### Navigation Path
 
-1. Started at: `docs/index.rst`
-   - Found: Feature cards mention type coverage but no direct link to type mappings.
-   - Followed: Sidebar toctree to Explanation section
-2. Navigated to: `docs/explanation/index.rst`
-   - Found: Two entries listed. Second entry is `:ref:explanation-type-mappings` with description "Complete mapping of every supported Arrow data type to the Python type it produces."
-   - Followed: `:ref:explanation-type-mappings`
-3. Navigated to: `docs/explanation/type-mappings.rst`
-   - Found: Comprehensive tables covering every Arrow type category: integers, floats, decimals (`Decimal128` -> `decimal.Decimal` with precision preserved), booleans, strings, dates, times, timestamps (naive vs aware with ZoneInfo, nanosecond truncation warning), durations, binary (with base64 caveat in validated mode), lists, maps, structs, dictionaries, intervals, unions, run-end encoded, and null types.
-   - Important edge cases documented: Date32 produces `datetime.date` while Date64 produces `datetime.datetime`; nanosecond timestamps truncated to microseconds; binary data base64-encoded in validated mode; Float16/32 widened to 64-bit.
-   - Struct section cross-references `:ref:how-to-convert-nested-models` for detailed usage patterns.
-   - Type-alignment: The page serves as both explanation and reference. The table format lets me look up specific mappings quickly (reference need), while the prose notes explain nuances (explanation need). For this persona and goal, the dual nature works well.
-
-All three specific needs in the scenario are fully addressed: timestamps (with naive/aware distinction and nanosecond truncation), decimals (all four Decimal variants with precision notes), and nested structs (with cross-reference to the nested models how-to).
+1. `docs/index.rst`, then Reference, then `reference/api.rst`. The signatures now use `data: ArrowData`, Raises lists the input `TypeError`, the schema `ValueError` and the Map `TypeError`, and a new "Input types" table explains `ArrowData` and both protocols, including the caveat that a plain `Array` or `Series` type-checks but fails at runtime.
+2. I clicked `ArrowData` and landed on the autoapi page. The entry reads: "a RecordBatch, Table or stream. Type: Arrow record-batch data that arrowmodel converts". The sentence is split, and part of it is rendered as a "Type:" field (see problem 2). This is friction, not a blocker, because the hand-written table already answered the question.
 
 ---
 
-## Scenario S3: I want to handle Pydantic aliases because my database returns camelCase column names but my Python models use snake_case fields
+## Scenario S5: Stream large Arrow query results through FastAPI without loading all rows
+
+**Verdict:** PASS (up from the previous pass's PARTIAL note)
+
+### Navigation Path
+
+1. `how-to/integrate-fastapi.rst` > Stream large results. The Table variant is shown first, followed by an explicit statement that it still loads everything, and then the reader-inside-generator variant. The warning explains both the closed-cursor failure and the late-error (200 then cut-off) behaviour. I ran all three shapes and they behave as described.
+2. Friction: both examples register `@app.get("/products/export")` (problem 5).
+
+---
+
+## Scenario S6: Fast path vs `validate=True` for a ~40k-row ADBC result
+
+**Verdict:** PASS (up from PARTIAL; the previous gaps on AliasPath, NULLs, Table ratios, benchmark links, `response_model` and the clickable card are fixed)
+
+### Navigation Path
+
+1. `explanation/fast-vs-validated.rst` > Performance characteristics. The 38,000-row row (82 ms fast, 202 ms validated, 257 ms baseline) answers the 40k question directly, and the numbers match the linked results file.
+2. Friction: the range prose and the nested-trade-off sentence are slightly off from the file (problem 4).
+
+---
+
+## Scenario S7 (new): Stream a large ADBC result from a RecordBatchReader into models
 
 **Verdict:** PASS
 
 ### Navigation Path
 
-1. Started at: `docs/index.rst`
-   - Found: "Pydantic Aliases" feature card mentions `validation_alias`, `alias`, field name, and `populate_by_name` / `validate_by_name`.
-   - Followed: Sidebar navigation to How-To Guides
-2. Navigated to: `docs/how-to/index.rst`
-   - Found: `:ref:how-to-work-with-aliases` listed under "Conversion features" with description "Map Arrow column names to Pydantic field names using aliases, validation_alias, and populate_by_name."
-   - Followed: `:ref:how-to-work-with-aliases`
-3. Navigated to: `docs/how-to/work-with-aliases.rst`
-   - Found: Complete guide covering:
-     - Alias resolution priority (validation_alias > alias > field name) -- clear and unambiguous
-     - `validation_alias` with camelCase-to-snake_case code example (exactly my use case)
-     - `alias` fallback with code example
-     - Mixing alias types in one model with code example
-     - `populate_by_name` / `validate_by_name` for accepting both alias and field name, with bidirectional code examples
-     - Unsupported alias types (AliasPath, AliasChoices, AliasGenerator) with clear explanation, exact error message, and workaround
-   - Type-alignment: How-to guide is task-oriented -- perfect for the specific problem of camelCase columns to snake_case fields.
-   - Language is well-calibrated: assumes Pydantic `Field()` knowledge (persona knows this), explains arrowmodel-specific alias resolution behavior (persona needs this).
-
-Every code example is complete with imports, model definition, batch creation, conversion call, and print statements showing expected output. No friction.
-
----
-
-## Scenario S4: I want to look up the complete API signature for ArrowModelConverter including all parameters, methods, and return types
-
-**Verdict:** PASS
-
-### Navigation Path
-
-1. Started at: `docs/index.rst`
-   - Found: Toctree includes reference section.
-   - Followed: Sidebar toctree to Reference section
-2. Navigated to: `docs/reference/index.rst`
-   - Found: Single entry linking to `:ref:reference-api` listing all public symbols: `ArrowModel`, `ArrowModelConverter`, `model_convert`, `model_iter`, and helper functions.
-   - Followed: `:ref:reference-api`
-3. Navigated to: `docs/reference/api.rst`
-   - Found: Complete, manually-authored API reference with local table of contents. For `ArrowModelConverter` specifically:
-     - Class description explaining purpose, stateful nature, and when to use it vs ArrowModel
-     - `__init__` full signature with parameter table (`model_class: type[BaseModel]`, `validate: bool` keyword-only default `False`), raises documentation (`NotImplementedError` for unsupported alias types with specific conditions), and code example
-     - `convert` method full signature (`data: pa.RecordBatch | pa.Table -> list[BaseModel]`), parameter table with description of schema cross-referencing behavior, returns documentation (empty list for empty input), raises (`ValueError` with note about optional field and extra column behavior), and complete code example
-     - `iter` method full signature (`data: pa.RecordBatch | pa.Table -> Iterator[BaseModel]`), parameter table, yields, raises, and code example
-   - Also found complete reference for: `ArrowModel` (class + `convert` and `iter` classmethods with `Self` return type), `model_convert`, `model_iter`, `_build_field_map` (with alias resolution logic), and `_get_nested_model` (with handled annotation types)
-   - Type-alignment: Reference page is information-oriented with full signatures, parameter tables, return types, and exceptions -- exactly the right documentation type for looking up precise API details.
-
-The reference page uses consistent structure across all entries (signature code block, description, parameters table, returns, raises, code example). Each code example is realistic. The `ArrowModelConverter` section fully answers the scenario's requirements: constructor parameters with types and defaults, both method signatures with return types, and all exceptions documented with their trigger conditions.
-
----
-
-## Scenario S5: I want to stream large Arrow query results through a FastAPI endpoint without loading all rows into memory at once
-
-**Verdict:** PASS
-
-### Navigation Path
-
-1. Started at: `docs/index.rst`
-   - Found: Feature cards for "Lazy Iteration" (iter yields one model at a time) and the toctree for how-to guides.
-   - Followed: Sidebar toctree to How-To Guides
-2. Navigated to: `docs/how-to/index.rst`
-   - Found: Two relevant entries -- `:ref:how-to-iterate-large-datasets` and `:ref:how-to-integrate-fastapi`.
-   - Followed: `:ref:how-to-integrate-fastapi` (the goal is specifically about FastAPI streaming)
-3. Navigated to: `docs/how-to/integrate-fastapi.rst`
-   - Found: "Stream large results" section (final section) shows exactly the pattern needed:
-     - `Product.iter(table)` inside a generator function
-     - Each model yielded as `model_dump_json() + "\n"` for NDJSON format
-     - Generator passed to `StreamingResponse` with `application/x-ndjson` media type
-     - Full code example with ADBC connection context
-   - Type-alignment: How-to guide is goal-oriented -- correct type for accomplishing a specific task.
-
-The pattern is complete and immediately usable. The code shows the ADBC query, the generator function, and the StreamingResponse wiring in a single cohesive example. An engineer could copy this pattern directly.
-
-Additionally, `docs/how-to/iterate-large-datasets.rst` provides deeper background on how batch-at-a-time iteration works (memory proportional to largest single batch), the three API styles for iteration, and validation during iteration -- useful supplementary reading reachable from the same how-to index.
+1. Started at: `docs/index.rst`. The "Any Arrow Source" card names `RecordBatchReader` and links to `how-to/iterate-large-datasets.rst`.
+2. `iterate-large-datasets.rst` > Stream from a RecordBatchReader. It covers passing the reader to `iter`, the ADBC `fetch_record_batch()` example, keeping the cursor open, `convert` reading everything, read-once behaviour, the schema check before the first batch, and Polars. Then Handle input errors covers lazy errors on the first `next()`, the exact `TypeError` text, what to do with a `LazyFrame` or `Series`, and why a reader can come back empty. Everything I ran matched.
+3. I followed the link to `integrate-fastapi.rst` for the server-side variant, which works.
+4. Friction: nothing says this needs 1.1.0 (problem 1). The how-to index blurb only says "large Tables" (problem 3). The `.to_frame()` advice is incomplete (problem 6).
 
 ---
 
 ## Revision Recommendations
 
-No revision needed. All scenarios passed.
+### FAIL Issues (trigger revision)
+
+None. No revision pass needed.
+
+### PARTIAL Issues (for project author approval)
+
+None at scenario level. Low-severity fixes, ranked:
+
+| # | Sev | Page | Text at fault | Suggested fix |
+|---|-----|------|---------------|---------------|
+| 1 | Medium | `how-to/iterate-large-datasets.rst` (Stream from a RecordBatchReader, Handle input errors), `reference/api.rst` (Input types, `data` rows) | "Pass a ``pyarrow.RecordBatchReader`` straight to" (no version marker anywhere) | Add `.. versionadded:: 1.1.0` (stream input, `ArrowData`) / `.. versionchanged:: 1.1.0` (TypeError for non-record-batch input) so users on 1.0.x know why the snippet fails for them |
+| 2 | Medium-low | autoapi entry for `arrowmodel.ArrowData` (from the src docstring; the target of every `:py:data:` link in `api.rst`) | Renders "a RecordBatch, Table or stream. Type: Arrow record-batch data that arrowmodel converts"; `sphinx-build -n` warns `py:class reference target not found: Arrow record-batch data that arrowmodel converts` | Reword the docstring so Napoleon doesn't parse "X: Y" as a type field, e.g. "Arrow record-batch data that arrowmodel converts -- a RecordBatch, Table or stream." |
+| 3 | Low | `how-to/index.rst` | "Process large Tables lazily without materialising every model instance in memory." | Mention streams: "...large Tables and streaming query results (RecordBatchReader, Polars) lazily..." |
+| 4 | Low | `explanation/fast-vs-validated.rst` > Performance characteristics | "For flat schemas, the fast path is 3x to 4.5x faster than the pure-Python approach" (the linked file shows 2.42x at 50 rows and 4.77x at 500 rows); "For deeply nested models ... the gap widens" (it widens against the baseline, but against `validate=True` it is about 2.0x at 1,000 rows vs 2.7x flat) | Say "about 2.4x-4.8x (3x-4.5x from 100 rows up)"; say "the gap to the pure-Python baseline widens"; optionally cite the 38,000-row nested row (633 ms / 2,015 ms / 4,091 ms) |
+| 5 | Low | `how-to/integrate-fastapi.rst` > Stream large results | Both blocks use `@app.get("/products/export")` | Rename the second to `/products/export-stream`, or say "replace the endpoint above with" |
+| 6 | Low | `how-to/iterate-large-datasets.rst` > Handle input errors; `how-to/use-with-poldantic.rst` warning | "or ``.to_frame()`` on a ``Series``, first" | Add "(a one-column frame converts only into a model with one required field; otherwise build a DataFrame with all the columns)". Verified: `.to_frame()` on `df["id"]` raises `ValueError: ... missing required columns: ['name', 'score']` |
+| 7 | Low | `reference/api.rst` > ArrowModelConverter.convert example | `pa.Table.from_batches([batch, another_batch])` / `pa.RecordBatchReader.from_batches(batch.schema, [batch, another_batch])` | Define `another_batch`; `another_batch` is undefined, so the block fails if copied |
+| 8 | Very low (src message) | `how-to/iterate-large-datasets.rst` > Handle input errors | Shows only the clean `Int64Array` message; for a `ChunkedArray` or `Series` the real message ends "(ValueError: C Data interface error: Unable to interpret C data struct as a Schema)" | Optional: note that the message may carry the underlying error, or trim it in the error text |

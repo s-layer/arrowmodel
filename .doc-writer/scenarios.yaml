@@ -3,6 +3,7 @@ user_personas:
   - name: "Python backend engineers"
     skill_level: "intermediate-advanced"
     generated_at: "2026-04-04"
+    updated_at: "2026-10-21"
     doc_pages:
       - "docs/index.rst"
       - "docs/tutorials/index.rst"
@@ -20,6 +21,8 @@ user_personas:
       - "docs/explanation/fast-vs-validated.rst"
       - "docs/explanation/type-mappings.rst"
       - "docs/reference/index.rst"
+      - "docs/reference/api.rst"
+      - "README.md"
     scenarios:
       - id: S1
         goal: "I want to install arrowmodel and convert an ADBC query result into Pydantic models for a FastAPI endpoint"
@@ -46,3 +49,13 @@ user_personas:
         starting_point: "docs/index.rst"
         persona_relevance: "Production APIs sometimes need to export large datasets -- I need to know how to combine lazy iteration with FastAPI's StreamingResponse"
         done_when: "I have a clear pattern for using iter() with FastAPI StreamingResponse to stream NDJSON from a large Arrow Table"
+      - id: S6
+        goal: "I want to decide whether to use the fast path or validate=True for a 40k-row ADBC query result, and know exactly what the fast path does and does not guarantee"
+        starting_point: "docs/index.rst"
+        persona_relevance: "Added for the direct-construction release. My endpoint returns ~40k rows from ADBC; I need to know the latency cost of validate=True at that size, what model_construct semantics mean in practice (defaults, model_fields_set, model_post_init, no coercion), whether my overridden model_construct is still honoured, and how the numbers change for flat vs nested schemas"
+        done_when: "I can state the expected fast vs validated cost for ~40k flat rows, list what the fast path guarantees (same __dict__/fields_set/defaults/post_init as model_construct, overridden model_construct honoured) and what it does not (no coercion, validators or constraints; NaN passthrough), know how nested schemas change the trade-off, and pick a mode with confidence"
+      - id: S7
+        goal: "I want to stream a large ADBC query result from a RecordBatchReader (cursor.fetch_record_batch()) straight into Pydantic models, without first materialising the whole result as a Table"
+        starting_point: "docs/index.rst"
+        persona_relevance: "Added for the 1.1.0 stream-input release. My queries return millions of rows; fetch_arrow_table() blows the memory budget, so I want to hand the driver's reader (or a Polars DataFrame) to arrowmodel and keep memory bounded by one batch, in a script and behind a FastAPI StreamingResponse"
+        done_when: "I know that iter() and convert() accept a RecordBatchReader (and Polars DataFrame, nanoarrow stream, struct array), that iter() pulls one batch at a time while convert() reads everything, that the reader is read only once, that the cursor/connection must stay open while iterating (and how to do that inside a StreamingResponse generator), and what TypeError/ValueError I get for wrong input or missing columns and when they are raised"

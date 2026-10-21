@@ -6,8 +6,8 @@
 How to Use Validated Mode
 =========================
 
-By default, arrowmodel uses Pydantic's ``model_construct`` to build model
-instances without running validation. This is the fast path -- it trusts that
+By default, arrowmodel builds model instances the way Pydantic's
+``model_construct`` does, without running validation. This is the fast path -- it trusts that
 the Arrow data matches the model's schema. When you need Pydantic's full
 validation pipeline (type coercion, custom validators, field constraints),
 pass ``validate=True``.
@@ -85,8 +85,9 @@ Performance trade-off
 ---------------------
 
 Validation adds overhead because each row is serialised to JSON bytes and then
-parsed by Pydantic. Expect roughly 2-5x slower conversion compared to the fast
-path, depending on model complexity.
+parsed by Pydantic. Expect conversion to be roughly 2-3x slower than the fast
+path for flat schemas. See
+:ref:`explanation-fast-vs-validated-performance` for the benchmark numbers.
 
 The rule of thumb:
 
@@ -104,6 +105,7 @@ it the same way you would with ``model_validate_json``:
 
 .. code-block:: python
 
+   import pyarrow as pa
    from pydantic import BaseModel, ValidationError
    from arrowmodel import model_convert
 
@@ -121,7 +123,8 @@ it the same way you would with ``model_validate_json``:
        print(exc)
        # 1 validation error for StrictAge
        # age
-       #   Input should be a valid integer ... (type=int_parsing)
+       #   Input should be a valid integer, unable to parse string as an integer
+       #   [type=int_parsing, input_value='not_a_number', input_type=str]
 
 The error surfaces on the first row that fails validation. The remaining rows
 are not processed.

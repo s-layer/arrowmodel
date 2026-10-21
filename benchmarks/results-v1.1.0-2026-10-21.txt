@@ -1,0 +1,48 @@
+=== Flat Primitives (RecordBatch) ===
+
+    Rows |  Iters |         fast | validate=True | to_pylist+mc | vs pylist | vs valid.
+---------+--------+--------------+---------------+--------------+-----------+----------
+      50 |  10000 |       102 µs |        180 µs |       246 µs |     2.42x |     1.76x
+     100 |   5000 |       145 µs |        380 µs |       526 µs |     3.62x |     2.62x
+     250 |   2000 |       345 µs |        899 µs |       1.3 ms |     3.80x |     2.61x
+     500 |   1000 |       542 µs |        1.9 ms |       2.6 ms |     4.77x |     3.50x
+    1000 |    500 |       1.2 ms |        3.3 ms |       5.5 ms |     4.52x |     2.74x
+
+=== Nested (10-level struct + lists; baseline builds nested models too) ===
+
+    Rows |  Iters |         fast | validate=True | to_pylist+mc | vs pylist | vs valid.
+---------+--------+--------------+---------------+--------------+-----------+----------
+      50 |   1000 |       302 µs |        713 µs |       2.2 ms |     7.40x |     2.36x
+     100 |    500 |       756 µs |        1.6 ms |       4.5 ms |     5.90x |     2.10x
+     250 |    200 |       1.9 ms |        3.9 ms |       9.4 ms |     4.90x |     2.03x
+     500 |    100 |       4.6 ms |        8.0 ms |      23.1 ms |     5.00x |     1.74x
+    1000 |     50 |       8.5 ms |       17.3 ms |      43.7 ms |     5.13x |     2.03x
+
+=== Flat Primitives (Table, 10 batches) ===
+
+    Rows |  Iters |         fast | validate=True | to_pylist+mc | vs pylist | vs valid.
+---------+--------+--------------+---------------+--------------+-----------+----------
+     500 |   1000 |       729 µs |        1.9 ms |       2.4 ms |     3.26x |     2.54x
+    1000 |    500 |       1.3 ms |        3.6 ms |       5.4 ms |     4.16x |     2.78x
+    2500 |    200 |       3.7 ms |        9.5 ms |      12.6 ms |     3.44x |     2.58x
+    5000 |    100 |       7.9 ms |       20.7 ms |      30.3 ms |     3.83x |     2.61x
+   10000 |     50 |      15.7 ms |       43.8 ms |      62.6 ms |     4.00x |     2.80x
+
+=== 38k rows (the size reported from semolina) ===
+=== Flat Primitives (RecordBatch) ===
+
+    Rows |  Iters |         fast | validate=True | to_pylist+mc | vs pylist | vs valid.
+---------+--------+--------------+---------------+--------------+-----------+----------
+   38000 |     13 |      81.8 ms |      201.7 ms |     256.7 ms |     3.14x |     2.46x
+
+=== Nested (10-level struct + lists; baseline builds nested models too) ===
+
+    Rows |  Iters |         fast | validate=True | to_pylist+mc | vs pylist | vs valid.
+---------+--------+--------------+---------------+--------------+-----------+----------
+   38000 |      1 |     632.8 ms |     2014.6 ms |    4090.5 ms |     6.46x |     3.18x
+
+=== Flat Primitives (Table, 10 batches) ===
+
+    Rows |  Iters |         fast | validate=True | to_pylist+mc | vs pylist | vs valid.
+---------+--------+--------------+---------------+--------------+-----------+----------
+  380000 |      1 |     932.6 ms |     2600.2 ms |    4032.6 ms |     4.32x |     2.79x

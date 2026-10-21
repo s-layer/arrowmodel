@@ -9,8 +9,8 @@ Overview
 **arrowmodel** converts Apache Arrow ``RecordBatch`` and ``Table`` objects directly
 into Pydantic v2 model instances -- no intermediate Python dicts, no two-step
 materialisation. A tight Rust loop walks the Arrow buffers via the Arrow C Data
-Interface and hands you back typed models, roughly 2x faster than
-``to_pylist()`` + Pydantic construction.
+Interface and hands you back typed models, roughly 3x faster than
+``to_pylist()`` + ``model_construct`` for flat schemas.
 
 .. code-block:: python
 
@@ -40,39 +40,48 @@ Interface and hands you back typed models, roughly 2x faster than
    .. grid-item-card:: Dict-Free Conversion
       :text-align: center
 
-      Skips ``to_pylist()`` entirely. Arrow buffers go straight to
-      ``model_construct`` calls in a single Rust loop.
+      Skips ``to_pylist()`` entirely. A single Rust loop builds each model
+      straight from the Arrow buffers, exactly as ``model_construct`` would.
 
-   .. grid-item-card:: ~2x Faster
+   .. grid-item-card:: ~3x Faster
       :text-align: center
 
-      Roughly twice as fast as the pure-Python approach for flat schemas,
+      Roughly three times as fast as the pure-Python approach for flat schemas,
       with less memory allocation pressure.
 
    .. grid-item-card:: Any Arrow Source
       :text-align: center
+      :link: how-to-iterate-large-datasets
+      :link-type: ref
 
-      Accepts any Arrow-PyCapsule-compatible input -- pyarrow, Polars,
-      nanoarrow -- via the Arrow C Data Interface.
+      Accepts any Arrow record batch or stream -- a pyarrow ``Table`` or
+      ``RecordBatchReader``, a Polars ``DataFrame``, nanoarrow -- via the
+      Arrow PyCapsule Interface.
 
 .. grid:: 1 2 3 3
 
    .. grid-item-card:: Pydantic Aliases
       :text-align: center
+      :link: how-to-work-with-aliases
+      :link-type: ref
 
       Full alias resolution: ``validation_alias``, ``alias``, field name,
       and ``populate_by_name`` / ``validate_by_name``.
 
    .. grid-item-card:: Nested Models
       :text-align: center
+      :link: how-to-convert-nested-models
+      :link-type: ref
 
       Arrow ``Struct`` columns map automatically to nested Pydantic models,
       including ``Optional`` structs and deeply nested hierarchies.
 
    .. grid-item-card:: Validated Mode
       :text-align: center
+      :link: how-to-use-validated-mode
+      :link-type: ref
 
-      Choose between the fast path (``model_construct``, no validation)
+      Choose between the fast path (``model_construct`` semantics, no validation)
       and the validated path (``model_validate_json``, full Pydantic checks).
 
 Getting Started

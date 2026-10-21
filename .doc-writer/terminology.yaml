@@ -34,15 +34,13 @@ source_terms:
   - canonical: "Table"
     variants: []
     source: "pyarrow.Table"
-  - canonical: "field_map"
-    variants: ["field mapping"]
-    source: "_field_map attribute and _build_field_map function in src/arrowmodel/__init__.py"
   - canonical: "fast path"
     variants: []
     source: "validate=False default behavior"
   - canonical: "validated path"
-    variants: ["validated mode"]
+    variants: []
     source: "validate=True behavior"
+    note: "\"validated mode\" is accepted when naming the validate=True setting (page title, headings, README feature list); \"validated path\" when describing what the conversion does."
 
 proper_nouns:
   - canonical: "Polars"
@@ -65,5 +63,11 @@ project_terms:
     variants: ["Arrow PyCapsule interface", "PyCapsule interface", "PyCapsule"]
   - canonical: "arrowmodel"
     variants: []
+  - canonical: "field mapping"
+    variants: []
+    note: "Prose term for the alias-aware column-to-field map. Do not write field_map in prose: _field_map is a private attribute."
+  - canonical: "model_construct semantics"
+    variants: ["model_construct calls"]
+    note: "Since v1.0.1 the fast path usually builds instances in Rust with the same result as model_construct, so do not describe it as calling model_construct per row."
 
 overrides: {}

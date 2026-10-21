@@ -49,8 +49,9 @@ The nested model's field names must match the struct's child field names.
    print(people[0].address.city)  # NYC
    print(people[0].address.zip_code)  # 10001
 
-The nested ``Address`` instances are built with ``model_construct`` (or
-``model_validate_json`` in validated mode) just like top-level models.
+The nested ``Address`` instances are built the same way as top-level models:
+with the same result as ``model_construct`` on the fast path, or through
+``model_validate_json`` in validated mode.
 
 Handle optional nested models
 -----------------------------

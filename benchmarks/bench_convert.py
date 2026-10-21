@@ -1,8 +1,17 @@
 """
-Benchmark: arrowmodel vs to_pylist() + model_construct.
+Benchmark: arrowmodel's fast and validated paths vs to_pylist() + model_construct.
 
-Both benchmarks start from the same pre-created data.
-Only the conversion path is measured (not batch/table creation).
+Every path starts from the same pre-created data, and only the conversion is
+measured (not batch/table creation). Each time is the best of ROUNDS rounds.
+
+Columns:
+    fast           ArrowModelConverter(model).convert(data)
+    validate=True  ArrowModelConverter(model, validate=True).convert(data)
+    to_pylist+mc   [model.model_construct(**row) for row in data.to_pylist()]
+                   (nested benchmark: construct_recursive, which also builds the
+                   nested models, since model_construct does not recurse)
+    vs pylist      to_pylist+mc time / fast time (higher means fast is quicker)
+    vs valid.      validate=True time / fast time
 
 Iteration counts are normalised so that each benchmark processes
 ~TARGET_INSTANCES model instances regardless of row count, giving
@@ -11,6 +20,7 @@ comparable wall-clock times across sizes.
 Usage:
     uv run python benchmarks/bench_convert.py  # defaults: 50, 100, 250, 500, 1000
     uv run python benchmarks/bench_convert.py 1000 10000 100000
+    uv run python benchmarks/bench_convert.py 38000  # the size semolina reported on
 """
 
 from __future__ import annotations
@@ -18,16 +28,22 @@ from __future__ import annotations
 import datetime
 import sys
 import time
+import typing
+from typing import TYPE_CHECKING, Any, cast
 
 import pyarrow as pa
 from pydantic import BaseModel
 
 from arrowmodel import ArrowModelConverter
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 DEFAULT_SIZES = [50, 100, 250, 500, 1000]
 TARGET_INSTANCES = 500_000
 NESTING_DEPTH = 10
 TABLE_BATCHES = 10
+ROUNDS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -247,115 +263,121 @@ def _format_time(seconds: float) -> str:
     return f"{seconds * 1e3:.1f} ms"
 
 
-def _print_row(rows: str, iters: str, t_ad: str, t_bl: str, speedup: str) -> None:
-    print(f"{rows:>8} | {iters:>6} | {t_ad:>14} | {t_bl:>14} | {speedup:>8}")
+_COLUMNS = ("Rows", "Iters", "fast", "validate=True", "to_pylist+mc", "vs pylist", "vs valid.")
+_WIDTHS = (8, 6, 12, 13, 12, 9, 9)
+
+
+def _print_row(*cells: str) -> None:
+    print(" | ".join(f"{cell:>{width}}" for cell, width in zip(cells, _WIDTHS, strict=True)))
 
 
 def _print_header() -> None:
-    _print_row("Rows", "Iters", "arrowmodel", "to_pylist+mc", "Speedup")
-    print(f"{'-' * 8}-+-{'-' * 6}-+-{'-' * 14}-+-{'-' * 14}-+-{'-' * 8}")
+    _print_row(*_COLUMNS)
+    print("-+-".join("-" * width for width in _WIDTHS))
+
+
+def _best_of(fn: Callable[[], object], iters: int) -> float:
+    """Best per-call time over ROUNDS rounds of ``iters`` calls (after one warmup call)."""
+    fn()
+    best = float("inf")
+    for _ in range(ROUNDS):
+        t0 = time.perf_counter()
+        for _ in range(iters):
+            fn()
+        best = min(best, (time.perf_counter() - t0) / iters)
+    return best
+
+
+def _nested_model(annotation: Any) -> type[BaseModel] | None:
+    """The BaseModel in ``Model`` or ``Model | None``, else None."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    for arg in typing.get_args(annotation):
+        if isinstance(arg, type) and issubclass(arg, BaseModel):
+            return arg
+    return None
+
+
+def construct_recursive(model: type[BaseModel], row: dict[str, Any]) -> BaseModel:
+    """
+    ``model_construct`` that also builds nested models from nested dicts.
+
+    ``model_construct`` does not recurse, so ``to_pylist()`` + ``model_construct``
+    alone leaves every nested level as a plain dict. This baseline does the same
+    work as arrowmodel: one model instance per struct value.
+    """
+    kwargs: dict[str, Any] = {}
+    for name, value in row.items():
+        field = model.model_fields.get(name)
+        nested = _nested_model(field.annotation) if field is not None else None
+        if nested is not None and isinstance(value, dict):
+            value = construct_recursive(nested, cast("dict[str, Any]", value))
+        kwargs[name] = value
+    return model.model_construct(**kwargs)
+
+
+def _run(
+    model: type[BaseModel],
+    data: pa.RecordBatch | pa.Table,
+    rows: int,
+    iters: int,
+    *,
+    recursive_baseline: bool = False,
+) -> None:
+    fast = ArrowModelConverter(model)
+    validated = ArrowModelConverter(model, validate=True)
+    t_fast = _best_of(lambda: fast.convert(data), iters)
+    t_valid = _best_of(lambda: validated.convert(data), iters)
+    if recursive_baseline:
+        t_base = _best_of(
+            lambda: [construct_recursive(model, row) for row in data.to_pylist()], iters
+        )
+    else:
+        t_base = _best_of(lambda: [model.model_construct(**row) for row in data.to_pylist()], iters)
+    _print_row(
+        str(rows),
+        str(iters),
+        _format_time(t_fast),
+        _format_time(t_valid),
+        _format_time(t_base),
+        f"{t_base / t_fast:.2f}x",
+        f"{t_valid / t_fast:.2f}x",
+    )
 
 
 def run_benchmark(sizes: list[int]) -> None:
     _print_header()
-
     for n in sizes:
-        batch = make_batch(n)
-        converter = ArrowModelConverter(BenchModel)
-        iters = max(1, TARGET_INSTANCES // n)
-
-        # warmup
-        converter.convert(batch)
-        [BenchModel.model_construct(**row) for row in batch.to_pylist()]
-
-        # arrowmodel
-        t0 = time.perf_counter()
-        for _ in range(iters):
-            converter.convert(batch)
-        t_ad = (time.perf_counter() - t0) / iters
-
-        # baseline
-        t0 = time.perf_counter()
-        for _ in range(iters):
-            [BenchModel.model_construct(**row) for row in batch.to_pylist()]
-        t_bl = (time.perf_counter() - t0) / iters
-
-        speedup = t_bl / t_ad
-        _print_row(str(n), str(iters), _format_time(t_ad), _format_time(t_bl), f"{speedup:.2f}x")
+        _run(BenchModel, make_batch(n), n, max(1, TARGET_INSTANCES // n))
 
 
 def run_nested_benchmark(sizes: list[int]) -> None:
+    # model_construct does not recurse into nested dicts, so the baseline here is
+    # construct_recursive: it builds every nested model, as arrowmodel does.
     _print_header()
-
     for n in sizes:
-        batch = make_nested_batch(n)
-        converter = ArrowModelConverter(NestedBenchModel)
-        iters = max(1, TARGET_INSTANCES // (n * NESTING_DEPTH))
-
-        # warmup
-        converter.convert(batch)
-        [NestedBenchModel.model_construct(**row) for row in batch.to_pylist()]
-
-        # arrowmodel
-        t0 = time.perf_counter()
-        for _ in range(iters):
-            converter.convert(batch)
-        t_ad = (time.perf_counter() - t0) / iters
-
-        # baseline: model_construct only constructs top-level model (no recursive
-        # construction of nested dicts). This is a known limitation -- the benchmark
-        # still shows the cost difference of the full operation since in practice
-        # users need the nested models too, which arrowmodel provides.
-        t0 = time.perf_counter()
-        for _ in range(iters):
-            [NestedBenchModel.model_construct(**row) for row in batch.to_pylist()]
-        t_bl = (time.perf_counter() - t0) / iters
-
-        speedup = t_bl / t_ad
-        _print_row(str(n), str(iters), _format_time(t_ad), _format_time(t_bl), f"{speedup:.2f}x")
+        _run(
+            NestedBenchModel,
+            make_nested_batch(n),
+            n,
+            max(1, TARGET_INSTANCES // (n * NESTING_DEPTH)),
+            recursive_baseline=True,
+        )
 
 
 def run_table_benchmark(sizes: list[int]) -> None:
     _print_header()
-
     for n in sizes:
-        batches = [make_batch(n) for _ in range(TABLE_BATCHES)]
-        table = pa.Table.from_batches(batches)
+        table = pa.Table.from_batches([make_batch(n) for _ in range(TABLE_BATCHES)])
         total_rows = n * TABLE_BATCHES
-        converter = ArrowModelConverter(BenchModel)
-        iters = max(1, TARGET_INSTANCES // total_rows)
-
-        # warmup
-        converter.convert(table)
-        [BenchModel.model_construct(**row) for row in table.to_pylist()]
-
-        # arrowmodel
-        t0 = time.perf_counter()
-        for _ in range(iters):
-            converter.convert(table)
-        t_ad = (time.perf_counter() - t0) / iters
-
-        # baseline
-        t0 = time.perf_counter()
-        for _ in range(iters):
-            [BenchModel.model_construct(**row) for row in table.to_pylist()]
-        t_bl = (time.perf_counter() - t0) / iters
-
-        speedup = t_bl / t_ad
-        _print_row(
-            str(total_rows),
-            str(iters),
-            _format_time(t_ad),
-            _format_time(t_bl),
-            f"{speedup:.2f}x",
-        )
+        _run(BenchModel, table, total_rows, max(1, TARGET_INSTANCES // total_rows))
 
 
 if __name__ == "__main__":
     sizes = [int(arg) for arg in sys.argv[1:]] if len(sys.argv) > 1 else DEFAULT_SIZES
     print("=== Flat Primitives (RecordBatch) ===\n")
     run_benchmark(sizes)
-    print("\n=== Nested (10-level struct + lists) ===\n")
+    print("\n=== Nested (10-level struct + lists; baseline builds nested models too) ===\n")
     run_nested_benchmark(sizes)
     print(f"\n=== Flat Primitives (Table, {TABLE_BATCHES} batches) ===\n")
     run_table_benchmark(sizes)

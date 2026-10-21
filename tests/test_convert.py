@@ -17,6 +17,7 @@ Covers Phase 2-4 requirement IDs:
 from __future__ import annotations
 
 import datetime
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import pyarrow as pa
@@ -31,6 +32,10 @@ class IntModel(BaseModel):
     i16: int
     i32: int
     i64: int
+
+
+class IntModelSmall(BaseModel):
+    id: int
 
 
 class UIntModel(BaseModel):
@@ -235,6 +240,38 @@ class TestAPI:
         assert isinstance(results, list)
         assert len(results) == 3
         assert isinstance(results[0], MixedModel)
+
+
+class TestUnsupportedInput:
+    """convert()/iter() reject inputs that are not a RecordBatch or Table with a clear TypeError."""
+
+    @staticmethod
+    def _inputs() -> dict[str, Any]:
+        return {
+            "array": pa.array([1, 2]),
+            "chunked_array": pa.chunked_array([[1, 2]]),
+            "list_of_dicts": [{"id": 1}],
+        }
+
+    @pytest.mark.parametrize("kind", ["array", "chunked_array", "list_of_dicts"])
+    @pytest.mark.parametrize("method", ["convert", "iter"])
+    def test_raises_type_error(self, kind: str, method: str) -> None:
+        data = self._inputs()[kind]
+        converter = ArrowModelConverter(IntModelSmall)
+        with pytest.raises(TypeError, match="RecordBatch or Table") as exc_info:
+            list(getattr(converter, method)(data))
+        assert type(data).__name__ in str(exc_info.value)
+
+    def test_error_names_streams_as_supported(self) -> None:
+        with pytest.raises(TypeError, match="RecordBatchReader or a Polars DataFrame"):
+            ArrowModelConverter(IntModelSmall).convert(cast("Any", [{"id": 1}]))
+
+    def test_supported_inputs_still_work(self) -> None:
+        batch = pa.record_batch({"id": [1, 2]})
+        converter = ArrowModelConverter(IntModelSmall)
+        assert [m.id for m in converter.convert(batch)] == [1, 2]
+        assert [m.id for m in converter.convert(pa.Table.from_batches([batch]))] == [1, 2]
+        assert [m.id for m in converter.iter(batch)] == [1, 2]
 
 
 class TestEndToEnd:

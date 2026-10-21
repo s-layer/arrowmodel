@@ -25,7 +25,7 @@ The two paths at a glance
      - ``validate=False``
      - ``validate=True``
    * - Pydantic method
-     - ``model_construct``
+     - ``model_construct`` semantics (built in Rust)
      - ``model_validate_json``
    * - Type coercion
      - None
@@ -37,8 +37,8 @@ The two paths at a glance
      - Skipped
      - Enforced
    * - Speed
-     - ~2x faster than ``to_pylist()`` + ``model_construct``
-     - Slower (JSON round-trip + validation)
+     - About 3x faster than ``to_pylist()`` + ``model_construct`` for flat schemas
+     - About 2.5x slower than the fast path (JSON round-trip + validation)
 
 How the fast path works
 ------------------------
@@ -48,24 +48,47 @@ When ``validate=False`` (the default), arrowmodel:
 1. Walks each Arrow column in Rust, extracting values directly from Arrow
    buffers.
 2. For each row, collects the extracted values as Python objects.
-3. Calls ``model_construct(**row_kwargs)`` on the model class.
+3. Builds each instance exactly as ``model_construct(**row_kwargs)`` would.
 
 ``model_construct`` is Pydantic's "I know what I'm doing" constructor. It
 bypasses all validation -- no ``@field_validator`` decorators fire, no
 ``Field(ge=0)`` constraints are checked, no type coercion is attempted. The
 values go straight into the model's ``__dict__``.
 
+``model_construct`` itself is plain Python, and it matches every keyword
+argument against every field's aliases on every call. Every row of a batch has
+the same columns, so arrowmodel works out that matching once per batch and then
+builds each instance in Rust: the same ``__dict__`` (in the same order), the
+same ``model_fields_set``, defaults and default factories applied the same way,
+and ``model_post_init`` still runs.
+
+Some models still get a real ``model_construct`` call per row:
+
+- Models that override ``model_construct``, including ``RootModel``.
+- Nested models (the target of a struct column) whose result would depend on
+  the values rather than just the column names: an ``AliasPath`` validation
+  alias, extra struct fields kept by ``extra="allow"``, or struct fields that
+  match no model field when the model has a ``model_post_init`` hook or private
+  attributes. On the top-level model an ``AliasPath`` is still rejected with
+  ``NotImplementedError`` (see :ref:`how-to-work-with-aliases`).
+
+These models produce the same instances either way; they just do not get the
+speed-up.
+
 This is fast because:
 
 - No intermediate Python dicts from ``to_pylist()``.
 - No JSON serialisation or parsing.
 - No Pydantic validation overhead.
+- No per-row alias matching in Python.
 - The Rust loop over Arrow buffers is tight and cache-friendly.
 
 The trade-off is trust. You are trusting that the Arrow data matches the model's
 schema exactly. If a column contains a string where the model expects an int,
 you get a model instance with a string in an int field -- no error, no coercion,
-just a quietly wrong value.
+just a quietly wrong value. The same goes for nulls: a NULL in a column whose
+field is not ``Optional`` becomes ``None`` on the fast path, where
+``validate=True`` would raise ``ValidationError``.
 
 How the validated path works
 -----------------------------
@@ -86,7 +109,7 @@ constraints. If anything fails, it raises ``ValidationError``.
    flowchart LR
        A["Arrow buffers"] --> B["Rust extraction"]
        B --> C{validate?}
-       C -->|"False"| D["model_construct"]
+       C -->|"False"| D["direct construction<br/>(same result as model_construct)"]
        C -->|"True"| E["JSON bytes"]
        E --> F["model_validate_json"]
        D --> G["Model instance"]
@@ -115,41 +138,59 @@ When to use which
 - You need Pydantic's type coercion (e.g., string ``"42"`` to int ``42``).
 - Correctness matters more than speed for this particular code path.
 
+.. _explanation-fast-vs-validated-performance:
+
 Performance characteristics
 ----------------------------
 
-From the project's benchmarks on flat primitive schemas (``RecordBatch`` input):
+From the project's benchmarks (`bench_convert.py
+<https://github.com/s-layer/arrowmodel/blob/main/benchmarks/bench_convert.py>`__, recorded in `the results file
+<https://github.com/s-layer/arrowmodel/blob/main/benchmarks/results-v1.1.0-2026-10-21.txt>`__) on a flat schema
+of seven primitive and temporal columns, ``RecordBatch`` input, best of five
+rounds:
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 25 25 25
+   :widths: 20 20 20 20 20
 
    * - Rows
      - arrowmodel (fast)
+     - arrowmodel (``validate=True``)
      - ``to_pylist()`` + ``model_construct``
-     - Speedup
+     - Fast path vs ``to_pylist()``
    * - 100
-     - 1.9 ms
-     - 3.8 ms
-     - ~2x
-   * - 500
-     - 8.1 ms
-     - 16.2 ms
-     - ~2x
+     - 145 µs
+     - 380 µs
+     - 526 µs
+     - 3.6x
    * - 1,000
-     - 15.6 ms
-     - 33.9 ms
-     - ~2.2x
+     - 1.2 ms
+     - 3.3 ms
+     - 5.5 ms
+     - 4.5x
+   * - 38,000
+     - 82 ms
+     - 202 ms
+     - 257 ms
+     - 3.1x
 
-The fast path is roughly 2x faster than the pure-Python approach for flat
-schemas. For deeply nested models (10 levels of struct-in-struct), the advantage
-narrows to roughly parity -- the Rust loop's overhead is proportionally larger
-when each row requires recursive struct conversion.
+For flat schemas, the fast path is roughly 2.5x to 4.5x faster than the pure-Python
+approach and roughly 2.5x faster than the validated path. ``Table`` input (10
+batches) shows the same ratios.
+
+For deeply nested models (10 levels of struct-in-struct with lists), the gap to
+the pure-Python approach widens. ``model_construct`` does not recurse, so the pure-Python baseline for
+this benchmark calls it at every level to build the nested models, as arrowmodel
+does. At 1,000 rows the fast path takes 8.5 ms, the validated path 17.3 ms and
+the baseline 43.7 ms: the fast path is about 5x faster than the baseline and
+about 2x faster than the validated path. At 38,000 rows the three take 633 ms,
+2,015 ms and 4,091 ms.
 
 The validated path adds the cost of JSON serialisation and Pydantic's validation
-pipeline on top of the extraction. It is slower than both the fast path and the
-pure-Python approach, but it gives you the same guarantees as calling
-``model_validate_json`` directly.
+pipeline on top of the extraction. For flat schemas it is still faster
+than ``to_pylist()`` + ``model_construct``, and for the nested benchmark it is
+about 2-3x faster than building the nested models that way. Either way it gives
+you the same guarantees as calling ``model_validate_json`` directly.
 
 A note on float NaN and Infinity
 ---------------------------------
