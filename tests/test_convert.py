@@ -33,6 +33,10 @@ class IntModel(BaseModel):
     i64: int
 
 
+class IntModelSmall(BaseModel):
+    id: int
+
+
 class UIntModel(BaseModel):
     u8: int
     u16: int
@@ -235,6 +239,41 @@ class TestAPI:
         assert isinstance(results, list)
         assert len(results) == 3
         assert isinstance(results[0], MixedModel)
+
+
+class TestUnsupportedInput:
+    """convert()/iter() reject inputs that are not a RecordBatch or Table with a clear TypeError."""
+
+    @staticmethod
+    def _inputs() -> dict[str, object]:
+        batch = pa.record_batch({"id": [1, 2]})
+        return {
+            "reader": pa.RecordBatchReader.from_batches(batch.schema, [batch]),
+            "array": pa.array([1, 2]),
+            "chunked_array": pa.chunked_array([[1, 2]]),
+            "list_of_dicts": [{"id": 1}],
+        }
+
+    @pytest.mark.parametrize("kind", ["reader", "array", "chunked_array", "list_of_dicts"])
+    @pytest.mark.parametrize("method", ["convert", "iter"])
+    def test_raises_type_error(self, kind: str, method: str) -> None:
+        data = self._inputs()[kind]
+        converter = ArrowModelConverter(IntModelSmall)
+        with pytest.raises(TypeError, match="RecordBatch or Table") as exc_info:
+            list(getattr(converter, method)(data))
+        assert type(data).__name__ in str(exc_info.value)
+
+    def test_reader_error_says_how_to_convert(self) -> None:
+        reader = self._inputs()["reader"]
+        with pytest.raises(TypeError, match=r"read_all\(\)"):
+            ArrowModelConverter(IntModelSmall).convert(reader)
+
+    def test_supported_inputs_still_work(self) -> None:
+        batch = pa.record_batch({"id": [1, 2]})
+        converter = ArrowModelConverter(IntModelSmall)
+        assert [m.id for m in converter.convert(batch)] == [1, 2]
+        assert [m.id for m in converter.convert(pa.Table.from_batches([batch]))] == [1, 2]
+        assert [m.id for m in converter.iter(batch)] == [1, 2]
 
 
 class TestEndToEnd:
