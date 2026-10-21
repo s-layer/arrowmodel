@@ -100,17 +100,31 @@ Use validated mode for untrusted data
 
 If the Arrow data comes from an external source -- a third-party Flight SQL
 server, a user-uploaded Parquet file, or a federated query -- enable validation
-to run Pydantic's full pipeline:
+to run Pydantic's full pipeline. FastAPI cannot take a pyarrow ``Table`` as a
+request body, so accept the upload as a file and read it with pyarrow:
 
 .. code-block:: python
 
+   import pyarrow.parquet as pq
+   from fastapi import UploadFile
+
+
    @app.post("/products/import", response_model=list[Product])
-   def import_products(table: pa.Table):
+   def import_products(file: UploadFile):
+       table = pq.read_table(file.file)
        # Untrusted data: run full Pydantic validation
        return Product.convert(table, validate=True)
 
 See :ref:`how-to-use-validated-mode` for more on what the validated path catches
 and the performance trade-off.
+
+.. note::
+
+   ``response_model`` does not re-validate what you return. FastAPI serialises
+   model instances of the declared class as they are, so a wrong value from the
+   fast path reaches the client as JSON, with at most a Pydantic serialisation
+   warning in your logs. Use ``validate=True`` when the data needs checking;
+   ``response_model`` will not do it for you.
 
 Stream large results
 --------------------

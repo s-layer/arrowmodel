@@ -105,6 +105,7 @@ it the same way you would with ``model_validate_json``:
 
 .. code-block:: python
 
+   import pyarrow as pa
    from pydantic import BaseModel, ValidationError
    from arrowmodel import model_convert
 
@@ -122,7 +123,8 @@ it the same way you would with ``model_validate_json``:
        print(exc)
        # 1 validation error for StrictAge
        # age
-       #   Input should be a valid integer ... (type=int_parsing)
+       #   Input should be a valid integer, unable to parse string as an integer
+       #   [type=int_parsing, input_value='not_a_number', input_type=str]
 
 The error surfaces on the first row that fails validation. The remaining rows
 are not processed.

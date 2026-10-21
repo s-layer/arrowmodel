@@ -102,6 +102,9 @@ the subclass: ``User.convert(batch)`` returns ``list[User]``.
 
 - ``ValueError`` -- Arrow schema is missing one or more required model fields.
   The error message lists the missing column names and the available columns.
+- ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
+  Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
+  the field that way instead.
 
 .. code-block:: python
 
@@ -153,6 +156,9 @@ over :py:meth:`~arrowmodel.ArrowModel.convert` results.
 **Raises:**
 
 - ``ValueError`` -- Arrow schema is missing one or more required model fields.
+- ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
+  Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
+  the field that way instead.
 
 .. code-block:: python
 
@@ -269,6 +275,9 @@ list for empty input.
 - ``ValueError`` -- Arrow schema is missing one or more required model fields.
   Optional fields with defaults are silently skipped when absent.
   Extra Arrow columns not present in the model are silently ignored.
+- ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
+  Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
+  the field that way instead.
 
 .. code-block:: python
 
@@ -330,6 +339,9 @@ iterating over :py:meth:`~arrowmodel.ArrowModelConverter.convert` results.
 **Raises:**
 
 - ``ValueError`` -- Arrow schema is missing one or more required model fields.
+- ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
+  Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
+  the field that way instead.
 
 .. code-block:: python
 
@@ -380,6 +392,9 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
 **Raises:**
 
 - ``ValueError`` -- Arrow schema is missing required model fields.
+- ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
+  Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
+  the field that way instead.
 - ``NotImplementedError`` -- The model uses unsupported alias types
   (``AliasPath``, ``AliasChoices``, or ``AliasGenerator``).
 
@@ -451,6 +466,9 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
 **Raises:**
 
 - ``ValueError`` -- Arrow schema is missing required model fields.
+- ``TypeError`` -- A field annotated as a ``dict`` or ``Mapping`` maps to an
+  Arrow ``Map`` column. Map columns convert to ``list[tuple[K, V]]``; annotate
+  the field that way instead.
 - ``NotImplementedError`` -- The model uses unsupported alias types
   (``AliasPath``, ``AliasChoices``, or ``AliasGenerator``).
 

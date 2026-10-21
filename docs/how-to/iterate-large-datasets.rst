@@ -97,6 +97,26 @@ each, only ~100,000 model instances exist in memory at any point.
    identically to iterating over the result of ``convert``. The lazy advantage
    only appears with multi-batch Tables.
 
+Stream from a RecordBatchReader
+-------------------------------
+
+``convert`` and ``iter`` accept a ``RecordBatch`` or a ``Table``, not a
+``pyarrow.RecordBatchReader``. Passing a reader raises ``ValueError``. To keep
+memory bounded while a query streams in, loop over the reader yourself and
+convert each batch as it arrives:
+
+.. code-block:: python
+
+   # ADBC cursors expose a reader via fetch_record_batch()
+   reader = cur.fetch_record_batch()
+
+   for batch in reader:
+       for user in User.iter(batch):
+           print(user)
+
+Calling ``reader.read_all()`` instead gives you a ``Table`` you can pass
+directly, at the cost of holding the whole result in memory.
+
 Iterate with validation
 -----------------------
 

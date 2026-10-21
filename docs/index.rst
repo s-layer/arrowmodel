@@ -59,18 +59,24 @@ Interface and hands you back typed models, roughly 3x faster than
 
    .. grid-item-card:: Pydantic Aliases
       :text-align: center
+      :link: how-to-work-with-aliases
+      :link-type: ref
 
       Full alias resolution: ``validation_alias``, ``alias``, field name,
       and ``populate_by_name`` / ``validate_by_name``.
 
    .. grid-item-card:: Nested Models
       :text-align: center
+      :link: how-to-convert-nested-models
+      :link-type: ref
 
       Arrow ``Struct`` columns map automatically to nested Pydantic models,
       including ``Optional`` structs and deeply nested hierarchies.
 
    .. grid-item-card:: Validated Mode
       :text-align: center
+      :link: how-to-use-validated-mode
+      :link-type: ref
 
       Choose between the fast path (``model_construct`` semantics, no validation)
       and the validated path (``model_validate_json``, full Pydantic checks).
