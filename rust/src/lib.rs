@@ -76,7 +76,10 @@ mod _core {
 
         // Decompose field_specs into parallel vectors
         let col_indices: Vec<usize> = field_specs.iter().map(|(idx, _, _)| *idx).collect();
-        let field_names: Vec<&str> = field_specs.iter().map(|(_, name, _)| name.as_str()).collect();
+        let field_names: Vec<&str> = field_specs
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect();
         let nested_models: Vec<&Option<PyObject>> =
             field_specs.iter().map(|(_, _, model)| model).collect();
 
@@ -149,7 +152,10 @@ mod _core {
 
         // Decompose field_specs into parallel vectors
         let col_indices: Vec<usize> = field_specs.iter().map(|(idx, _, _)| *idx).collect();
-        let field_names: Vec<&str> = field_specs.iter().map(|(_, name, _)| name.as_str()).collect();
+        let field_names: Vec<&str> = field_specs
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect();
         let nested_models: Vec<&Option<PyObject>> =
             field_specs.iter().map(|(_, _, model)| model).collect();
 
@@ -224,8 +230,10 @@ mod _core {
 
         // Decompose field_specs into parallel vectors
         let col_indices: Vec<usize> = field_specs.iter().map(|(idx, _, _)| *idx).collect();
-        let field_names: Vec<&str> =
-            field_specs.iter().map(|(_, name, _)| name.as_str()).collect();
+        let field_names: Vec<&str> = field_specs
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect();
         let nested_models: Vec<&Option<PyObject>> =
             field_specs.iter().map(|(_, _, model)| model).collect();
 
@@ -291,8 +299,10 @@ mod _core {
 
         // Decompose field_specs into parallel vectors
         let col_indices: Vec<usize> = field_specs.iter().map(|(idx, _, _)| *idx).collect();
-        let field_names: Vec<&str> =
-            field_specs.iter().map(|(_, name, _)| name.as_str()).collect();
+        let field_names: Vec<&str> = field_specs
+            .iter()
+            .map(|(_, name, _)| name.as_str())
+            .collect();
         let nested_models: Vec<&Option<PyObject>> =
             field_specs.iter().map(|(_, _, model)| model).collect();
 
