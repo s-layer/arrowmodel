@@ -203,3 +203,26 @@ class TestStructArrays:
         with pytest.raises(ValueError, match="name"):
             ArrowModelConverter(Row).convert(array)
 
+
+class TestThreads:
+    """iter() generators can be advanced from different threads (e.g. Starlette's threadpool)."""
+
+    def test_iter_advanced_on_another_thread(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        batches = _batches()
+        reader = pa.RecordBatchReader.from_batches(batches[0].schema, batches)
+        gen = ArrowModelConverter(Row).iter(reader)
+        first = [next(gen), next(gen)]  # opens the input and reads batch 1 here
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            rest = pool.submit(list, gen).result()
+        assert _rows(first + rest) == _expected()
+
+    @pytest.mark.filterwarnings("error::pytest.PytestUnraisableExceptionWarning")
+    def test_iter_dropped_on_another_thread(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        gen = ArrowModelConverter(Row).iter(pa.Table.from_batches(_batches()))
+        next(gen)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(gen.close).result()
