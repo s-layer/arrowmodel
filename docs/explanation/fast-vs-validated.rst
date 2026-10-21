@@ -143,8 +143,9 @@ When to use which
 Performance characteristics
 ----------------------------
 
-From the project's benchmarks (``benchmarks/bench_convert.py``, recorded in
-``benchmarks/results-v1.0.1-direct-construct-2026-10-21.txt``) on a flat schema
+From the project's benchmarks (`bench_convert.py
+<https://github.com/s-layer/arrowmodel/blob/main/benchmarks/bench_convert.py>`__, recorded in `the results file
+<https://github.com/s-layer/arrowmodel/blob/main/benchmarks/results-v1.0.1-direct-construct-2026-10-21.txt>`__) on a flat schema
 of seven primitive and temporal columns, ``RecordBatch`` input, best of five
 rounds:
 
