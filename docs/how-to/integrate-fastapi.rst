@@ -170,8 +170,8 @@ and close when the last row has gone:
 
 .. code-block:: python
 
-   @app.get("/products/export")
-   def export_products():
+   @app.get("/products/export-stream")
+   def export_products_stream():
        def generate():
            with adbc_sqlite.connect("products.db") as conn:
                with conn.cursor() as cur:

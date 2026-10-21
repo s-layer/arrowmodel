@@ -328,6 +328,7 @@ list for empty input.
    # [Order(order_id=101, total=29.99, status='shipped'), ...]
 
    # Tables work too -- multiple batches are processed internally
+   another_batch = pa.record_batch({"order_id": [103], "total": [12.00], "status": ["pending"]})
    table = pa.Table.from_batches([batch, another_batch])
    all_orders = converter.convert(table)
 
@@ -549,6 +550,8 @@ not when ``iter`` is called.
 
 Input types
 -----------
+
+.. versionadded:: 1.1.0
 
 Type aliases and protocols for annotating your own code that passes Arrow data
 to arrowmodel. They describe the objects that the ``data`` parameter accepts.

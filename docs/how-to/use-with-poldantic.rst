@@ -112,8 +112,9 @@ like.
 
    Only a ``DataFrame`` carries rows that arrowmodel can read. A ``LazyFrame``
    is a query plan, not data, and a ``Series`` is a single column, so both
-   raise ``TypeError``. Call ``.collect()`` on a ``LazyFrame``, or
-   ``.to_frame()`` on a ``Series``, before converting:
+   raise ``TypeError``. Call ``.collect()`` on a ``LazyFrame`` before
+   converting, and convert the ``DataFrame`` a ``Series`` came from rather
+   than the ``Series``:
 
    .. code-block:: python
 

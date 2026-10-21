@@ -104,6 +104,9 @@ only ~100,000 model instances exist in memory at any point.
 Stream from a RecordBatchReader
 -------------------------------
 
+.. versionadded:: 1.1.0
+   Arrow stream input, including ``RecordBatchReader`` and Polars ``DataFrame``.
+
 Pass a ``pyarrow.RecordBatchReader`` straight to
 :py:meth:`~arrowmodel.ArrowModel.iter`. arrowmodel pulls the next batch from
 the reader only when it needs more rows, so memory stays bounded by one batch
@@ -214,11 +217,16 @@ not on the line that calls ``iter``:
    # of record batches, such as a RecordBatchReader or a Polars DataFrame);
    # got pyarrow.lib.Int64Array.
 
+For some inputs, such as a ``ChunkedArray`` of numbers or a Polars ``Series``,
+the message ends with a detail from the Arrow C Data Interface in parentheses.
+
 - **TypeError naming your input type.** ``iter`` and ``convert`` take record
   batches: a ``RecordBatch``, a ``Table``, or a stream of record batches. A
   plain ``Array``, a non-struct ``ChunkedArray``, a Polars ``Series`` or
   ``LazyFrame``, or a list of dicts raises ``TypeError``. Call ``.collect()``
-  on a ``LazyFrame``, or ``.to_frame()`` on a ``Series``, first.
+  on a ``LazyFrame`` first. A ``Series`` is one column, so it only converts
+  (via ``.to_frame()``) for a model with one required field; otherwise use the
+  ``DataFrame`` it came from.
 - **ValueError about missing required columns.** The source's schema lacks a
   column for a required model field. The message lists the missing names and
   the columns that are available.

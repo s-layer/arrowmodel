@@ -174,16 +174,17 @@ rounds:
      - 257 ms
      - 3.1x
 
-For flat schemas, the fast path is 3x to 4.5x faster than the pure-Python
+For flat schemas, the fast path is roughly 2.5x to 4.5x faster than the pure-Python
 approach and roughly 2.5x faster than the validated path. ``Table`` input (10
 batches) shows the same ratios.
 
-For deeply nested models (10 levels of struct-in-struct with lists), the gap
-widens. ``model_construct`` does not recurse, so the pure-Python baseline for
+For deeply nested models (10 levels of struct-in-struct with lists), the gap to
+the pure-Python approach widens. ``model_construct`` does not recurse, so the pure-Python baseline for
 this benchmark calls it at every level to build the nested models, as arrowmodel
 does. At 1,000 rows the fast path takes 8.5 ms, the validated path 17.3 ms and
 the baseline 43.7 ms: the fast path is about 5x faster than the baseline and
-about 2x faster than the validated path.
+about 2x faster than the validated path. At 38,000 rows the three take 633 ms,
+2,015 ms and 4,091 ms.
 
 The validated path adds the cost of JSON serialisation and Pydantic's validation
 pipeline on top of the extraction. For flat schemas it is still faster

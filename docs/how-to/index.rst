@@ -18,7 +18,7 @@ and assumes you already know the basics from the :ref:`getting-started` tutorial
 - :ref:`how-to-use-validated-mode` -- Enable full Pydantic validation during conversion and understand the performance trade-off.
 - :ref:`how-to-work-with-aliases` -- Map Arrow column names to Pydantic field names using aliases, validation_alias, and populate_by_name.
 - :ref:`how-to-convert-nested-models` -- Convert Arrow Struct columns into nested Pydantic models, including optional and deeply nested types.
-- :ref:`how-to-iterate-large-datasets` -- Process large Tables lazily without materialising every model instance in memory.
+- :ref:`how-to-iterate-large-datasets` -- Process large Tables and streams such as a RecordBatchReader lazily, without materialising every model instance in memory.
 
 **Integrations**
 

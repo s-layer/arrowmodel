@@ -40,7 +40,7 @@ class _ArrowSchemaExportable(Protocol):
 
 
 ArrowData: TypeAlias = ArrowArrayExportable | ArrowStreamExportable
-"""Arrow record-batch data that arrowmodel converts: a RecordBatch, Table or stream."""
+"""The Arrow data that arrowmodel converts (a RecordBatch, Table or stream of record batches)."""
 
 __all__ = [
     "ArrowArrayExportable",
