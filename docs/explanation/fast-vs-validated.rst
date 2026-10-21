@@ -25,7 +25,7 @@ The two paths at a glance
      - ``validate=False``
      - ``validate=True``
    * - Pydantic method
-     - ``model_construct``
+     - ``model_construct`` semantics (built in Rust)
      - ``model_validate_json``
    * - Type coercion
      - None
@@ -60,11 +60,20 @@ argument against every field's aliases on every call. Every row of a batch has
 the same columns, so arrowmodel works out that matching once per batch and then
 builds each instance in Rust: the same ``__dict__`` (in the same order), the
 same ``model_fields_set``, defaults and default factories applied the same way,
-and ``model_post_init`` still runs. Models that override ``model_construct``
-(including ``RootModel``), and nested models whose result would depend on the
-values rather than just the column names (an ``AliasPath`` validation alias, or
-extra struct fields kept by ``extra="allow"``), get a real ``model_construct``
-call per row instead.
+and ``model_post_init`` still runs.
+
+Some models still get a real ``model_construct`` call per row:
+
+- Models that override ``model_construct``, including ``RootModel``.
+- Nested models (the target of a struct column) whose result would depend on
+  the values rather than just the column names: an ``AliasPath`` validation
+  alias, extra struct fields kept by ``extra="allow"``, or struct fields that
+  match no model field when the model has a ``model_post_init`` hook or private
+  attributes. On the top-level model an ``AliasPath`` is still rejected with
+  ``NotImplementedError`` (see :ref:`how-to-work-with-aliases`).
+
+These models produce the same instances either way; they just do not get the
+speed-up.
 
 This is fast because:
 
@@ -77,7 +86,9 @@ This is fast because:
 The trade-off is trust. You are trusting that the Arrow data matches the model's
 schema exactly. If a column contains a string where the model expects an int,
 you get a model instance with a string in an int field -- no error, no coercion,
-just a quietly wrong value.
+just a quietly wrong value. The same goes for nulls: a NULL in a column whose
+field is not ``Optional`` becomes ``None`` on the fast path, where
+``validate=True`` would raise ``ValidationError``.
 
 How the validated path works
 -----------------------------
@@ -127,6 +138,8 @@ When to use which
 - You need Pydantic's type coercion (e.g., string ``"42"`` to int ``42``).
 - Correctness matters more than speed for this particular code path.
 
+.. _explanation-fast-vs-validated-performance:
+
 Performance characteristics
 ----------------------------
 
@@ -143,7 +156,7 @@ rounds:
      - arrowmodel (fast)
      - arrowmodel (``validate=True``)
      - ``to_pylist()`` + ``model_construct``
-     - Fast path speedup
+     - Fast path vs ``to_pylist()``
    * - 100
      - 152 µs
      - 403 µs
@@ -161,9 +174,11 @@ rounds:
      - 3.5x
 
 For flat schemas, the fast path is roughly 3x faster than the pure-Python
-approach and roughly 2.5x faster than the validated path. For deeply nested models (10 levels of
+approach and roughly 2.5x faster than the validated path. ``Table`` input (10
+batches) shows the same ratios. For deeply nested models (10 levels of
 struct-in-struct with lists), the fast path is still about 2x faster than the
-validated path, but slower than ``to_pylist()`` + ``model_construct``. That
+validated path, but slower than ``to_pylist()`` + ``model_construct``: at 1,000
+rows, 9.0 ms fast, 20.3 ms validated, 5.0 ms baseline. That
 comparison flatters the baseline: ``model_construct`` does not recurse, so the
 baseline leaves the nested levels as plain dicts, while arrowmodel builds every
 nested model instance.
@@ -171,8 +186,8 @@ nested model instance.
 The validated path adds the cost of JSON serialisation and Pydantic's validation
 pipeline on top of the extraction. For flat schemas it is still a little faster
 than ``to_pylist()`` + ``model_construct``; for the nested benchmark it is about
-3.5x slower than that (non-recursive) baseline. Either way it gives you the same
-guarantees as calling ``model_validate_json`` directly.
+3.4-4.7x slower than that (non-recursive) baseline. Either way it gives you
+the same guarantees as calling ``model_validate_json`` directly.
 
 A note on float NaN and Infinity
 ---------------------------------

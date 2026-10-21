@@ -6,7 +6,7 @@
 
 Dict-free, single-step conversion from Apache Arrow buffers to Pydantic v2 model instances.
 
-arrowmodel uses a Rust core (via PyO3) to walk Arrow `RecordBatch` and `Table` buffers directly, building Pydantic model instances in a tight loop with no intermediate Python dicts. It replaces the `to_pylist()` + `Model(**row)` two-step with a single call that is roughly 3x faster for flat schemas.
+arrowmodel uses a Rust core (via PyO3) to walk Arrow `RecordBatch` and `Table` buffers directly, building Pydantic model instances in a tight loop with no intermediate Python dicts. It replaces the `to_pylist()` + `Model.model_construct(**row)` two-step with a single call that is roughly 3x faster for flat schemas.
 
 [Full Documentation](https://s-layer.github.io/arrowmodel/)
 
@@ -50,7 +50,7 @@ users = User.convert(batch)
 
 ## Key Features
 
-- **Dict-free conversion**: Rust builds each model instance straight from the Arrow buffers, exactly as `model_construct` would -- no `to_pylist()`, no intermediate dicts.
+- **Dict-free conversion**: Rust builds each model instance straight from the Arrow buffers, exactly as `model_construct` would, with no `to_pylist()` and no intermediate dicts.
 - **~3x faster for flat schemas**: Roughly three times the throughput of the pure-Python approach, with less allocation pressure.
 - **Three API styles**: `ArrowModel` base class for concise models, `ArrowModelConverter` for reusable converters, and `model_convert`/`model_iter` for one-shot use.
 - **Validated mode**: Pass `validate=True` to run full Pydantic validation (`model_validate_json`) when you need type coercion or custom validators.
@@ -64,7 +64,7 @@ users = User.convert(batch)
 arrowmodel accepts any Arrow-PyCapsule-compatible input via the Arrow C Data Interface:
 
 - **pyarrow** -- `RecordBatch`, `Table`
-- **Polars** -- `DataFrame` (exports via PyCapsule)
+- **Polars** -- `DataFrame` (exports via the Arrow PyCapsule Interface)
 - **nanoarrow** -- arrays and record batches
 
 No pyarrow dependency is required at runtime. If your Arrow data comes from Polars or nanoarrow, it works without installing pyarrow.

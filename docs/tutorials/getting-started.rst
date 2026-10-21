@@ -122,9 +122,9 @@ You should see:
    Carol (carol@example.com): 7.3
 
 That is the entire workflow. Arrow columns were mapped to model fields by name,
-values were extracted directly from Arrow buffers in Rust, and each row was
-assembled into a ``User`` instance via ``model_construct`` -- no intermediate
-Python dicts were created.
+values were extracted directly from Arrow buffers in Rust, and each row became
+a ``User`` instance with the same result as ``model_construct``. No
+intermediate Python dicts were created.
 
 .. tip::
 

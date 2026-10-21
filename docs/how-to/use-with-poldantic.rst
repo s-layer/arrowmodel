@@ -100,7 +100,7 @@ Why this works without pyarrow
 
 Polars DataFrames expose the
 `Arrow PyCapsule Interface <https://arrow.apache.org/docs/format/CDataInterface/PyCapsuleInterface.html>`_,
-the same protocol pyarrow uses. arrowmodel accepts any PyCapsule-compatible
+the same protocol pyarrow uses. arrowmodel accepts any Arrow-PyCapsule-compatible
 input, so Polars DataFrames work directly -- no intermediate pyarrow conversion.
 
 .. tip::

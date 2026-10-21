@@ -89,10 +89,11 @@ Convert an Arrow ``RecordBatch`` or ``Table`` to a list of model instances.
        (pyarrow, Polars, nanoarrow).
    * - ``validate``
      - ``bool`` (keyword-only, default ``False``)
-     - When ``False`` (the default), uses the **fast path** via
-       ``model_construct`` -- no Pydantic validation is run. When ``True``,
-       uses the **validated path** via ``model_validate_json`` -- full
-       Pydantic validation including custom validators.
+     - When ``False`` (the default), uses the **fast path**, which builds
+       instances as ``model_construct`` would and runs no Pydantic
+       validation. When ``True``, uses the **validated path** via
+       ``model_validate_json``, with full Pydantic validation including
+       custom validators.
 
 **Returns:** ``list[Self]`` -- a list of model instances. The list type matches
 the subclass: ``User.convert(batch)`` returns ``list[User]``.
@@ -144,8 +145,8 @@ over :py:meth:`~arrowmodel.ArrowModel.convert` results.
      - Arrow data to convert.
    * - ``validate``
      - ``bool`` (keyword-only, default ``False``)
-     - When ``False``, uses the fast path (``model_construct``). When ``True``,
-       uses the validated path (``model_validate_json``).
+     - When ``False``, uses the fast path (``model_construct`` semantics).
+       When ``True``, uses the validated path (``model_validate_json``).
 
 **Yields:** ``Self`` -- model instances one at a time.
 
@@ -209,8 +210,8 @@ Create a converter for the given Pydantic model class.
    * - ``validate``
      - ``bool`` (keyword-only, default ``False``)
      - When ``False``, the converter uses the fast path
-       (``model_construct``) on every conversion call. When ``True``,
-       it uses the validated path (``model_validate_json``).
+       (``model_construct`` semantics) on every conversion call. When
+       ``True``, it uses the validated path (``model_validate_json``).
 
 **Raises:**
 
@@ -371,8 +372,8 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
      - Arrow data to convert.
    * - ``validate``
      - ``bool`` (keyword-only, default ``False``)
-     - When ``False``, uses the fast path (``model_construct``). When ``True``,
-       uses the validated path (``model_validate_json``).
+     - When ``False``, uses the fast path (``model_construct`` semantics).
+       When ``True``, uses the validated path (``model_validate_json``).
 
 **Returns:** ``list[BaseModel]`` -- a list of model instances.
 
@@ -442,8 +443,8 @@ temporary :py:class:`~arrowmodel.ArrowModelConverter` internally, calls
      - Arrow data to convert.
    * - ``validate``
      - ``bool`` (keyword-only, default ``False``)
-     - When ``False``, uses the fast path (``model_construct``). When ``True``,
-       uses the validated path (``model_validate_json``).
+     - When ``False``, uses the fast path (``model_construct`` semantics).
+       When ``True``, uses the validated path (``model_validate_json``).
 
 **Yields:** ``BaseModel`` -- model instances one at a time.
 

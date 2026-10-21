@@ -10,7 +10,7 @@ Overview
 into Pydantic v2 model instances -- no intermediate Python dicts, no two-step
 materialisation. A tight Rust loop walks the Arrow buffers via the Arrow C Data
 Interface and hands you back typed models, roughly 3x faster than
-``to_pylist()`` + Pydantic construction for flat schemas.
+``to_pylist()`` + ``model_construct`` for flat schemas.
 
 .. code-block:: python
 
@@ -72,7 +72,7 @@ Interface and hands you back typed models, roughly 3x faster than
    .. grid-item-card:: Validated Mode
       :text-align: center
 
-      Choose between the fast path (``model_construct``, no validation)
+      Choose between the fast path (``model_construct`` semantics, no validation)
       and the validated path (``model_validate_json``, full Pydantic checks).
 
 Getting Started

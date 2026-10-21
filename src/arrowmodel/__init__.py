@@ -100,11 +100,11 @@ def _arrow_is_map(arrow_type: Any) -> bool:
 
 _BASE_MODEL_CONSTRUCT: Any = BaseModel.__dict__["model_construct"].__func__
 
-ConstructPlan = tuple[list[tuple[str, int, Any]], bool, bool]
+_ConstructPlan = tuple[list[tuple[str, int, Any]], bool, bool]
 """``(slots, extra_allow, post_init)`` -- see :func:`_construct_plan`."""
 
 
-def _construct_plan(model_class: type[BaseModel], keys: list[str]) -> ConstructPlan | None:
+def _construct_plan(model_class: type[BaseModel], keys: list[str]) -> _ConstructPlan | None:
     """
     Precompute what ``model_class.model_construct(**kwargs)`` does with these keys.
 
@@ -225,8 +225,8 @@ class ArrowModelConverter:
 
     Cross-references Arrow schema against Pydantic model fields at
     construction time (alias-aware field map built once) and at convert()
-    time (column indices resolved per-batch schema).  Uses model_construct
-    for zero-validation fast path.
+    time (column indices resolved per-batch schema).  The default fast path
+    builds instances with ``model_construct`` semantics (no validation).
 
     Per SCHEMA-01: Cross-references Arrow schema against Pydantic model fields.
     Per SCHEMA-02: Schema mapping compiled once at init, reused across batches.
