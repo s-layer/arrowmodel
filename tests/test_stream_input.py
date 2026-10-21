@@ -151,19 +151,21 @@ class TestPolars:
         with pytest.raises(ValueError, match=r"Available columns: \['id'\]"):
             ArrowModelConverter(Row).convert(df)
 
+
+class TestNanoarrow:
     def test_dict_field_over_map_column_raises(self) -> None:
-        """The Map guard works on non-pyarrow input (it reads the Arrow schema)."""
+        """The Map guard works on non-pyarrow input: it reads the Arrow schema."""
+        na = pytest.importorskip("nanoarrow")
 
         class Tagged(BaseModel):
             tags: dict[str, int]
 
         table = pa.table({"tags": pa.array([[("a", 1)]], type=pa.map_(pa.utf8(), pa.int64()))})
-        stream = pa.RecordBatchReader.from_batches(table.schema, table.to_batches())
+        stream = na.c_array_stream(table)
+        assert not isinstance(stream, pa.RecordBatchReader)
         with pytest.raises(TypeError, match="is a Map"):
             ArrowModelConverter(Tagged).convert(stream)
 
-
-class TestNanoarrow:
     def test_array_stream(self) -> None:
         na = pytest.importorskip("nanoarrow")
         stream = na.c_array_stream(pa.Table.from_batches(_batches()))
@@ -198,10 +200,54 @@ class TestStructArrays:
         assert _rows(ArrowModelConverter(Row).convert(chunked)) == _expected()
         assert _rows(ArrowModelConverter(Row).iter(chunked)) == _expected()
 
+    def test_struct_array_with_null_row_raises(self) -> None:
+        """A null row has no field values to build a model from."""
+        array = pa.array([{"id": 1, "name": "a"}, None])
+        with pytest.raises(ValueError, match="null rows"):
+            ArrowModelConverter(Row).convert(array)
+
+    def test_struct_chunked_array_with_null_row_raises(self) -> None:
+        """Not silently converted to a row of zero values."""
+        chunked = pa.chunked_array(
+            [pa.array([{"id": 1, "name": "a"}]), pa.array([None, {"id": 2, "name": "b"}])]
+        )
+        with pytest.raises(ValueError, match="null rows"):
+            ArrowModelConverter(Row).convert(chunked)
+        gen = ArrowModelConverter(Row).iter(chunked)
+        assert _rows([next(gen)]) == [(1, "a")]
+        with pytest.raises(ValueError, match="null rows"):
+            next(gen)
+
     def test_struct_array_missing_field(self) -> None:
         array = pa.array([{"id": 1}], type=pa.struct([("id", pa.int64())]))
         with pytest.raises(ValueError, match="name"):
             ArrowModelConverter(Row).convert(array)
+
+
+class TestReadErrors:
+    """An error raised by the producer mid-stream surfaces as a ValueError carrying its message."""
+
+    @staticmethod
+    def _failing_reader() -> pa.RecordBatchReader:
+        def batches() -> Iterator[pa.RecordBatch]:
+            yield _batches(1)[0]
+            raise RuntimeError("producer failed")
+
+        return pa.RecordBatchReader.from_batches(_batches(1)[0].schema, batches())
+
+    def test_convert(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"Failed to read the next Arrow record batch: .*producer failed"
+        ):
+            ArrowModelConverter(Row).convert(self._failing_reader())
+
+    def test_iter_yields_rows_before_the_error(self) -> None:
+        gen = ArrowModelConverter(Row).iter(self._failing_reader())
+        assert _rows([next(gen), next(gen)]) == [(0, "r0"), (1, "r1")]
+        with pytest.raises(
+            ValueError, match=r"Failed to read the next Arrow record batch: .*producer failed"
+        ):
+            next(gen)
 
 
 class TestThreads:
