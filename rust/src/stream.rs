@@ -1,3 +1,5 @@
+use std::sync::Mutex;
+
 use arrow_array::{RecordBatch, RecordBatchIterator, RecordBatchReader};
 use arrow_schema::{DataType, SchemaRef};
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -54,17 +56,26 @@ pub fn arrow_schema_fields(schema: PySchema) -> Vec<(String, bool)> {
 /// The stream is opened once, so a one-shot source such as a RecordBatchReader
 /// is read exactly once: its schema here, then its batches via `convert_next`
 /// (lazily, for `iter()`) or `convert_all`.
-#[pyclass(unsendable)]
+///
+/// Sendable, because an `iter()` generator holds one across `next()` calls,
+/// and those can run on different threads (e.g. Starlette's threadpool for a
+/// StreamingResponse). The reader is `Send` but not `Sync`, hence the Mutex;
+/// it is only reached through `&mut self`, so it is never actually locked.
+#[pyclass]
 pub struct ArrowInput {
-    reader: Option<Box<dyn RecordBatchReader + Send>>,
+    reader: Mutex<Option<Box<dyn RecordBatchReader + Send>>>,
     schema: SchemaRef,
 }
 
 impl ArrowInput {
     fn next_batch(&mut self) -> PyResult<Option<RecordBatch>> {
-        match self.reader.as_mut().and_then(|r| r.next()) {
+        let reader = self
+            .reader
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match reader.as_mut().and_then(|r| r.next()) {
             None => {
-                self.reader = None;
+                *reader = None;
                 Ok(None)
             }
             Some(Ok(batch)) => Ok(Some(batch)),
@@ -88,7 +99,7 @@ impl ArrowInput {
                 let schema = batch.schema();
                 let reader = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
                 return Ok(ArrowInput {
-                    reader: Some(Box::new(reader)),
+                    reader: Mutex::new(Some(Box::new(reader))),
                     schema,
                 });
             }
@@ -100,7 +111,7 @@ impl ArrowInput {
                 .into_reader()?;
             let schema = reader.schema();
             return Ok(ArrowInput {
-                reader: Some(reader),
+                reader: Mutex::new(Some(reader)),
                 schema,
             });
         }
