@@ -184,3 +184,22 @@ class TestNonRecordBatchStreams:
     def test_polars_series_rejected(self) -> None:
         with pytest.raises(TypeError, match="RecordBatch or Table"):
             ArrowModelConverter(Row).convert(pl.Series("id", [1, 2]))
+
+
+class TestStructArrays:
+    """A struct array has the same layout as a record batch and converts like one."""
+
+    def test_struct_array(self) -> None:
+        array = _batches(1)[0].to_struct_array()
+        assert _rows(ArrowModelConverter(Row).convert(array)) == [(0, "r0"), (1, "r1")]
+
+    def test_struct_chunked_array(self) -> None:
+        chunked = pa.chunked_array([batch.to_struct_array() for batch in _batches()])
+        assert _rows(ArrowModelConverter(Row).convert(chunked)) == _expected()
+        assert _rows(ArrowModelConverter(Row).iter(chunked)) == _expected()
+
+    def test_struct_array_missing_field(self) -> None:
+        array = pa.array([{"id": 1}], type=pa.struct([("id", pa.int64())]))
+        with pytest.raises(ValueError, match="name"):
+            ArrowModelConverter(Row).convert(array)
+

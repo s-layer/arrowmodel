@@ -33,7 +33,7 @@ class ArrowStreamExportable(Protocol):
     def __arrow_c_stream__(self, requested_schema: Any = None) -> Any: ...
 
 
-class ArrowSchemaExportable(Protocol):
+class _ArrowSchemaExportable(Protocol):
     """Anything exporting an Arrow schema via the PyCapsule Interface (e.g. a pyarrow Schema)."""
 
     def __arrow_c_schema__(self) -> Any: ...
@@ -47,7 +47,6 @@ __all__ = [
     "ArrowData",
     "ArrowModel",
     "ArrowModelConverter",
-    "ArrowSchemaExportable",
     "ArrowStreamExportable",
     "model_convert",
     "model_iter",
@@ -233,7 +232,7 @@ def _build_field_map(model_class: type[BaseModel]) -> dict[str, str]:
 
 class ArrowModelConverter:
     """
-    Convert Arrow RecordBatch data to Pydantic model instances.
+    Convert Arrow record-batch data to Pydantic model instances.
 
     Cross-references Arrow schema against Pydantic model fields at
     construction time (alias-aware field map built once) and at convert()
@@ -262,7 +261,7 @@ class ArrowModelConverter:
         self._field_map: dict[str, str] = _build_field_map(model_class)
 
     def _resolve_columns(
-        self, schema: ArrowSchemaExportable | Sequence[tuple[str, bool]]
+        self, schema: _ArrowSchemaExportable | Sequence[tuple[str, bool]]
     ) -> list[tuple[int, str, type[BaseModel] | None]]:
         """
         Resolve Arrow column indices from schema using the field map.
@@ -412,15 +411,22 @@ class ArrowModel(BaseModel):
     @classmethod
     def convert(cls, data: ArrowData, *, validate: bool = False) -> list[Self]:
         """
-        Convert Arrow RecordBatch or Table to a list of model instances.
+        Convert Arrow data to a list of model instances.
 
         Args:
-            data: Arrow RecordBatch or Table to convert.
+            data: A RecordBatch, or any Arrow stream of record batches (a
+                Table, RecordBatchReader or Polars DataFrame). A one-shot
+                stream such as a RecordBatchReader is consumed.
             validate: If True, use the validated path (model_validate_json).
                 Defaults to False (fast path via model_construct).
 
         Returns:
             List of model instances.
+
+        Raises:
+            TypeError: If data is not a RecordBatch or an Arrow stream of
+                record batches, or a dict field maps to an Arrow Map column.
+            ValueError: If the Arrow schema is missing a required field.
         """
         if validate:
             if not hasattr(cls, "_arrow_converter_validated"):
@@ -433,13 +439,23 @@ class ArrowModel(BaseModel):
         """
         Lazily yield individual model instances from Arrow data.
 
+        As with any generator, errors are raised on the first ``next()``, not
+        when ``iter()`` is called.
+
         Args:
-            data: Arrow RecordBatch or Table to convert.
+            data: A RecordBatch, or any Arrow stream of record batches (a
+                Table, RecordBatchReader or Polars DataFrame). A stream is
+                read one batch at a time as you iterate.
             validate: If True, use the validated path (model_validate_json).
                 Defaults to False (fast path via model_construct).
 
         Yields:
             Model instances one at a time.
+
+        Raises:
+            TypeError: If data is not a RecordBatch or an Arrow stream of
+                record batches, or a dict field maps to an Arrow Map column.
+            ValueError: If the Arrow schema is missing a required field.
         """
         if validate:
             if not hasattr(cls, "_arrow_converter_validated"):

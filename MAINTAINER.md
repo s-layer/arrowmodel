@@ -98,7 +98,8 @@ prek run --all-files
 arrowmodel/
   rust/
     src/
-      lib.rs          # PyO3 module definition, exposed Python functions
+      lib.rs          # PyO3 module definition; per-batch conversion (convert_batch)
+      stream.rs       # ArrowInput: opens a RecordBatch or Arrow stream once, converts batch by batch
       construct.rs    # Fast-path instance construction (model_construct-equivalent)
       extract.rs      # Arrow column extraction logic (DataType -> Python value)
     Cargo.toml        # Rust dependencies (pyo3, arrow-rs, serde_json, chrono)
@@ -112,16 +113,17 @@ arrowmodel/
     test_extended_types.py  # Extended type tests (decimals, binary, intervals, unions)
     test_arrow_model_base.py  # ArrowModel base class tests
     test_construct.py # Fast-path construction parity with model_construct
+    test_stream_input.py  # RecordBatchReader, Polars, nanoarrow and struct-array input
   benchmarks/
     bench_convert.py  # Benchmarks: fast path, validate=True, and to_pylist + model_construct
 ```
 
 ### Data flow
 
-1. Python calls `ArrowModelConverter.convert(data)` or `ArrowModel.convert(data)`.
-2. Python resolves Arrow columns to Pydantic field specs (column index, field name, nested model class).
-3. Python calls into Rust via `_core.convert_record_batch()` (fast) or `_core.convert_record_batch_validated()` (validated).
-4. Rust receives the RecordBatch via pyo3-arrow's Arrow C Data Interface.
+1. Python calls `ArrowModelConverter.convert(data)` or `ArrowModel.convert(data)` (or `iter`).
+2. Python opens the input with `_core.ArrowInput(data)` (`stream.rs`). It accepts anything exporting `__arrow_c_array__` (a RecordBatch or struct array) or `__arrow_c_stream__` (a Table, RecordBatchReader, Polars DataFrame, nanoarrow stream) via pyo3-arrow's Arrow C Data Interface, and raises `TypeError` for anything else. The stream is opened once, so a one-shot reader is read once.
+3. Python resolves the Arrow schema (`ArrowInput.fields()`) to Pydantic field specs (column index, field name, nested model class) before any batch is read.
+4. `convert` calls `ArrowInput.convert_all()`; `iter` calls `ArrowInput.convert_next()` once per batch, so a stream is read lazily.
 5. Rust iterates rows, extracting values from each column based on Arrow DataType.
 6. **Fast path:** `_construct_plan()` (Python) resolves once which value goes to which field, as `model_construct(**kwargs)` would; Rust then builds each instance directly (`construct.rs`). Models that override `model_construct`, or whose matching depends on values (`AliasPath`, unmatched keys with `extra="allow"` or a post-init hook), fall back to calling `model_construct` per row.
 7. **Validated path:** Rust serialises each row to JSON bytes, calls `model_validate_json(json_bytes)` per row.
