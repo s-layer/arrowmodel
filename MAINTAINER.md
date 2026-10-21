@@ -70,6 +70,13 @@ uv run ruff check src/ tests/
 uv run ruff format src/ tests/
 ```
 
+Rust:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml
+(cd rust && cargo clippy --all-targets -- -D warnings)
+```
+
 ### Type check
 
 ```bash
@@ -136,7 +143,9 @@ prek install      # Install git hooks
 prek run --all-files  # Run all checks manually
 ```
 
-Checks include: ruff (lint + format), basedpyright (type checking), pytest.
+prek hooks: ruff (lint + format), `cargo fmt --check`, basedpyright (type checking), and the usual whitespace/TOML/YAML checks.
+
+CI (`.github/workflows/quality.yml`) runs prek, then `cargo clippy --all-targets -- -D warnings` (CI only, since a cold run checks every dependency), then pytest.
 
 ## Release Process
 

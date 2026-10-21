@@ -916,8 +916,8 @@ impl<'a> ColumnExtractor<'a> {
                     let tid = arr.type_id(row);
                     let child = arr.child(tid);
                     let child_idx = match arr.offsets() {
-                        Some(_) => arr.value_offset(row) as usize, // Dense
-                        None => row,                               // Sparse
+                        Some(_) => arr.value_offset(row), // Dense
+                        None => row,                      // Sparse
                     };
                     let child_dt = type_map
                         .iter()
@@ -1445,8 +1445,8 @@ impl<'a> ColumnExtractor<'a> {
                     let tid = arr.type_id(row);
                     let child = arr.child(tid);
                     let child_idx = match arr.offsets() {
-                        Some(_) => arr.value_offset(row) as usize, // Dense
-                        None => row,                               // Sparse
+                        Some(_) => arr.value_offset(row), // Dense
+                        None => row,                      // Sparse
                     };
                     let child_dt = type_map
                         .iter()
