@@ -171,6 +171,12 @@ class TestNanoarrow:
         stream = na.c_array_stream(pa.Table.from_batches(_batches()))
         assert _rows(ArrowModelConverter(Row).convert(stream)) == _expected()
 
+    def test_multi_chunk_array(self) -> None:
+        """A nanoarrow Array exports both protocols; with several chunks only the stream works."""
+        na = pytest.importorskip("nanoarrow")
+        array = na.Array(pa.chunked_array([batch.to_struct_array() for batch in _batches()]))
+        assert _rows(ArrowModelConverter(Row).convert(array)) == _expected()
+
     def test_record_batch_array(self) -> None:
         """A nanoarrow struct array exports __arrow_c_array__, like a RecordBatch."""
         na = pytest.importorskip("nanoarrow")
