@@ -22,6 +22,7 @@ __all__ = [
     "model_convert",
     "model_iter",
     "_build_field_map",
+    "_construct_plan",
     "_get_nested_model",
     "_core",
 ]
@@ -95,6 +96,77 @@ def _arrow_is_map(arrow_type: Any) -> bool:
         return pa.types.is_map(arrow_type)
     except Exception:
         return False
+
+
+_BASE_MODEL_CONSTRUCT: Any = BaseModel.__dict__["model_construct"].__func__
+
+ConstructPlan = tuple[list[tuple[str, int, Any]], bool, bool]
+"""``(slots, extra_allow, post_init)`` -- see :func:`_construct_plan`."""
+
+
+def _construct_plan(model_class: type[BaseModel], keys: list[str]) -> ConstructPlan | None:
+    """
+    Precompute what ``model_class.model_construct(**kwargs)`` does with these keys.
+
+    ``BaseModel.model_construct`` is pure Python: for every row it walks every
+    model field, checks its alias and validation aliases against the kwargs, and
+    pops values into a new ``__dict__``. Which kwarg ends up in which field
+    depends only on the kwarg *names*, and every row of a column set has the same
+    names, so the matching can be resolved once here. The Rust row loop then
+    builds each instance directly, without calling ``model_construct``.
+
+    Returns ``(slots, extra_allow, post_init)``, where ``slots`` lists the model
+    fields in declaration order (the order ``model_construct`` fills
+    ``__dict__``) as ``(field_name, key_index, field_info)``:
+
+    - ``key_index >= 0``: the value comes from ``keys[key_index]``; the field is
+      in ``model_fields_set``.
+    - ``key_index == -1``: no key matches and the field has a default;
+      ``field_info.get_default(call_default_factory=True, validated_data=...)``
+      supplies it per row, as ``model_construct`` does.
+
+    Required fields with no matching key are left out, as ``model_construct``
+    leaves them out of ``__dict__``.
+
+    Returns ``None`` when the model needs the real ``model_construct``: it
+    overrides ``model_construct`` (``RootModel`` does), a field's validation
+    alias is an ``AliasPath`` that ``model_construct`` would evaluate (the match
+    depends on the values, not just the names), or unmatched keys would land in
+    ``__pydantic_extra__`` or private attributes (``extra='allow'``, or a
+    ``model_post_init`` hook).
+    """
+    construct = getattr(model_class.model_construct, "__func__", None)
+    if construct is not _BASE_MODEL_CONSTRUCT:
+        return None
+
+    remaining = {key: index for index, key in enumerate(keys)}
+    slots: list[tuple[str, int, Any]] = []
+    for name, field in model_class.__pydantic_fields__.items():
+        index: int | None = None
+        if field.alias is not None and field.alias in remaining:
+            index = remaining.pop(field.alias)
+        va = field.validation_alias
+        if index is None and va is not None:
+            choices = va.choices if isinstance(va, AliasChoices) else [va]
+            for alias in choices:
+                if isinstance(alias, str):
+                    if alias in remaining:
+                        index = remaining.pop(alias)
+                        break
+                else:
+                    return None  # AliasPath: the match depends on the values
+        if index is None and name in remaining:
+            index = remaining.pop(name)
+        if index is not None:
+            slots.append((name, index, None))
+        elif not field.is_required():
+            slots.append((name, -1, field))
+
+    extra_allow = model_class.model_config.get("extra") == "allow"
+    post_init = bool(model_class.__pydantic_post_init__)
+    if remaining and (extra_allow or post_init):
+        return None
+    return slots, extra_allow, post_init
 
 
 def _build_field_map(model_class: type[BaseModel]) -> dict[str, str]:

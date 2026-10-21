@@ -1,11 +1,12 @@
 use arrow_array::ArrayRef;
 use arrow_schema::DataType;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyString};
+use pyo3::types::{PyBytes, PyList};
 use pyo3_arrow::{PyRecordBatch, PyTable};
 
 type PyObject = Py<PyAny>;
 
+mod construct;
 mod extract;
 
 /// Unpack dictionary-encoded columns to their value type arrays.
@@ -57,8 +58,9 @@ mod _core {
 
     /// Convert an Arrow RecordBatch to a list of Pydantic model instances.
     ///
-    /// For each row, builds a kwargs PyDict from extracted column values
-    /// and calls model_cls.model_construct(**kwargs) -- no Pydantic validation.
+    /// For each row, builds the same instance as
+    /// model_cls.model_construct(**kwargs) -- no Pydantic validation -- without
+    /// calling the Python-level model_construct per row (see construct.rs).
     ///
     /// Arguments:
     ///   - batch: Arrow RecordBatch (via PyCapsule / C Data Interface)
@@ -83,11 +85,8 @@ mod _core {
         let nested_models: Vec<&Option<PyObject>> =
             field_specs.iter().map(|(_, _, model)| model).collect();
 
-        // FAST-03: Intern field names once, reuse across all rows (Pattern 5)
-        let interned_names: Vec<Bound<'_, PyString>> = field_names
-            .iter()
-            .map(|name| PyString::intern(py, name))
-            .collect();
+        // Resolve how to build instances from these fields once, not per row.
+        let constructor = construct::ModelConstructor::new(py, &model_cls, &field_names)?;
 
         // Pre-unpack dictionary columns before building extractors
         let schema = rb.schema();
@@ -119,16 +118,13 @@ mod _core {
         // Pitfall 5: Pre-allocate result Vec
         let mut results: Vec<PyObject> = Vec::with_capacity(num_rows);
 
-        // Row loop: build kwargs, call model_construct
+        // Row loop: extract the row's values, build the instance
         for row in 0..num_rows {
-            let kwargs = PyDict::new(py);
-            for (extractor, interned_name) in extractors.iter().zip(interned_names.iter()) {
-                let value = extractor.extract_value(py, row)?;
-                kwargs.set_item(interned_name, value)?;
-            }
-            // FAST-01, Pitfall 3: call_method with kwargs (not call_method1)
-            let instance = model_cls.call_method("model_construct", (), Some(&kwargs))?;
-            results.push(instance.unbind());
+            let values = extractors
+                .iter()
+                .map(|extractor| extractor.extract_value(py, row))
+                .collect::<PyResult<Vec<_>>>()?;
+            results.push(constructor.build(py, values)?);
         }
 
         // Convert Vec to PyList and return
@@ -159,11 +155,9 @@ mod _core {
         let nested_models: Vec<&Option<PyObject>> =
             field_specs.iter().map(|(_, _, model)| model).collect();
 
-        // FAST-02: Intern field names once, reuse across ALL batches
-        let interned_names: Vec<Bound<'_, PyString>> = field_names
-            .iter()
-            .map(|name| PyString::intern(py, name))
-            .collect();
+        // Resolve how to build instances from these fields once, reused across
+        // ALL batches.
+        let constructor = construct::ModelConstructor::new(py, &model_cls, &field_names)?;
 
         // Pre-allocate for total rows across all batches
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
@@ -196,13 +190,11 @@ mod _core {
                 .collect::<Result<_, _>>()?;
 
             for row in 0..rb.num_rows() {
-                let kwargs = PyDict::new(py);
-                for (extractor, interned_name) in extractors.iter().zip(interned_names.iter()) {
-                    let value = extractor.extract_value(py, row)?;
-                    kwargs.set_item(interned_name, value)?;
-                }
-                let instance = model_cls.call_method("model_construct", (), Some(&kwargs))?;
-                results.push(instance.unbind());
+                let values = extractors
+                    .iter()
+                    .map(|extractor| extractor.extract_value(py, row))
+                    .collect::<PyResult<Vec<_>>>()?;
+                results.push(constructor.build(py, values)?);
             }
         }
 

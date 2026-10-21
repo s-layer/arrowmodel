@@ -19,8 +19,11 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, IntervalUnit, TimeUnit};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList, PyString, PyTime, PyTuple};
+use pyo3::types::{PyBytes, PyList, PyString, PyTime, PyTuple};
 use serde_json::{Map, Number, Value};
+use std::sync::Arc;
+
+use crate::construct::{ModelConstructor, SharedConstructor};
 
 type PyObject = Py<PyAny>;
 
@@ -61,7 +64,7 @@ pub enum ColumnExtractor<'a> {
     Struct(
         &'a StructArray,
         Vec<(Py<PyString>, ColumnExtractor<'a>)>,
-        PyObject, // nested Pydantic model class
+        SharedConstructor, // builds the nested Pydantic model instances
     ),
     // Extended scalar types
     Float16(&'a arrow_array::Float16Array),
@@ -111,13 +114,18 @@ fn import_decimal_cls(py: Python<'_>) -> PyResult<PyObject> {
 /// the per-row rebuild of container child extractors (List/Map over a Struct)
 /// does **no** Python introspection: the model class for each Struct and the
 /// per-field child plans are resolved a single time up front, not once per row.
+///
+/// Cloning is cheap (no Python calls): each Struct's constructor is shared by
+/// `Arc`. Used when an owned child plan must be stored inside a per-row-built
+/// container extractor.
+#[derive(Clone)]
 pub enum ModelPlan {
     /// No nested model anywhere in this subtree (scalar columns, unions, etc.).
     None,
-    /// A Struct: its Pydantic model class plus a per-field child plan, in Arrow
+    /// A Struct: its model constructor plus a per-field child plan, in Arrow
     /// field order (aligned positionally with `DataType::Struct(fields)`).
     Struct {
-        model: PyObject,
+        constructor: SharedConstructor,
         children: Vec<ModelPlan>,
     },
     /// A single-child container (List / LargeList / FixedSizeList): the element
@@ -125,25 +133,6 @@ pub enum ModelPlan {
     List(Box<ModelPlan>),
     /// A Map: the key plan and the value plan.
     Map(Box<ModelPlan>, Box<ModelPlan>),
-}
-
-impl ModelPlan {
-    /// Deep-clone the plan, incrementing the refcount of each held model class.
-    /// Cheap (no Python calls / imports) — used when an owned child plan must be
-    /// stored inside a per-row-built container extractor.
-    fn clone_ref(&self, py: Python<'_>) -> ModelPlan {
-        match self {
-            ModelPlan::None => ModelPlan::None,
-            ModelPlan::Struct { model, children } => ModelPlan::Struct {
-                model: model.clone_ref(py),
-                children: children.iter().map(|c| c.clone_ref(py)).collect(),
-            },
-            ModelPlan::List(inner) => ModelPlan::List(Box::new(inner.clone_ref(py))),
-            ModelPlan::Map(k, v) => {
-                ModelPlan::Map(Box::new(k.clone_ref(py)), Box::new(v.clone_ref(py)))
-            }
-        }
-    }
 }
 
 /// Build the [`ModelPlan`] for a column subtree once, resolving the nested
@@ -191,8 +180,11 @@ fn build_model_plan(
                     child_nested_model.as_ref(),
                 )?);
             }
+            // Resolve how to build instances from this Struct's fields once.
+            let keys: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
+            let constructor = Arc::new(ModelConstructor::new(py, model_cls.bind(py), &keys)?);
             Ok(ModelPlan::Struct {
-                model: model_cls,
+                constructor,
                 children,
             })
         }
@@ -223,18 +215,18 @@ fn build_model_plan(
 
 /// Owned element plan for a single-child container (List/LargeList/
 /// FixedSizeList). `ModelPlan::None` when the plan carries no nested model.
-fn list_element_plan(plan: &ModelPlan, py: Python<'_>) -> ModelPlan {
+fn list_element_plan(plan: &ModelPlan) -> ModelPlan {
     match plan {
-        ModelPlan::List(inner) => inner.clone_ref(py),
+        ModelPlan::List(inner) => inner.as_ref().clone(),
         _ => ModelPlan::None,
     }
 }
 
 /// Owned (key, value) plans for a Map. `(None, None)` when the plan carries no
 /// nested model.
-fn map_kv_plans(plan: &ModelPlan, py: Python<'_>) -> (ModelPlan, ModelPlan) {
+fn map_kv_plans(plan: &ModelPlan) -> (ModelPlan, ModelPlan) {
     match plan {
-        ModelPlan::Map(k, v) => (k.clone_ref(py), v.clone_ref(py)),
+        ModelPlan::Map(k, v) => (k.as_ref().clone(), v.as_ref().clone()),
         _ => (ModelPlan::None, ModelPlan::None),
     }
 }
@@ -322,7 +314,7 @@ fn prepare_extractor_with_plan<'a>(
             Ok(ColumnExtractor::List(
                 arr,
                 field.data_type().clone(),
-                list_element_plan(plan, py),
+                list_element_plan(plan),
             ))
         }
         DataType::LargeList(field) => {
@@ -330,14 +322,17 @@ fn prepare_extractor_with_plan<'a>(
             Ok(ColumnExtractor::LargeList(
                 arr,
                 field.data_type().clone(),
-                list_element_plan(plan, py),
+                list_element_plan(plan),
             ))
         }
         DataType::Struct(fields) => {
             // The model and each field's child plan were resolved once by
             // build_model_plan; read them here without touching Python.
-            let (model_cls, child_plans) = match plan {
-                ModelPlan::Struct { model, children } => (model.clone_ref(py), children),
+            let (constructor, child_plans) = match plan {
+                ModelPlan::Struct {
+                    constructor,
+                    children,
+                } => (Arc::clone(constructor), children),
                 _ => return Err(struct_no_model_err(fields)),
             };
             let struct_arr = as_struct_array(col);
@@ -358,7 +353,7 @@ fn prepare_extractor_with_plan<'a>(
                 let field_name = PyString::intern(py, field.name()).unbind();
                 children.push((field_name, child_ext));
             }
-            Ok(ColumnExtractor::Struct(struct_arr, children, model_cls))
+            Ok(ColumnExtractor::Struct(struct_arr, children, constructor))
         }
         // Extended scalar types
         DataType::Float16 => Ok(ColumnExtractor::Float16(as_primitive_array::<Float16Type>(
@@ -444,7 +439,7 @@ fn prepare_extractor_with_plan<'a>(
             Ok(ColumnExtractor::FixedSizeList(
                 arr,
                 field.data_type().clone(),
-                list_element_plan(plan, py),
+                list_element_plan(plan),
             ))
         }
         DataType::Map(entries_field, _sorted) => {
@@ -452,7 +447,7 @@ fn prepare_extractor_with_plan<'a>(
             if let DataType::Struct(fields) = entries_field.data_type() {
                 let key_dt = fields[0].data_type().clone();
                 let val_dt = fields[1].data_type().clone();
-                let (key_plan, val_plan) = map_kv_plans(plan, py);
+                let (key_plan, val_plan) = map_kv_plans(plan);
                 Ok(ColumnExtractor::Map(
                     arr, key_dt, val_dt, key_plan, val_plan,
                 ))
@@ -646,19 +641,15 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(PyList::new(py, &items)?.into_any().unbind())
                 }
             }
-            ColumnExtractor::Struct(arr, children, model_cls) => {
+            ColumnExtractor::Struct(arr, children, constructor) => {
                 if arr.is_null(row) {
                     Ok(py.None()) // null struct -> None for entire nested model (Pitfall 4)
                 } else {
-                    let kwargs = PyDict::new(py);
-                    for (field_name, extractor) in children.iter() {
-                        let value = extractor.extract_value(py, row)?;
-                        kwargs.set_item(field_name.bind(py), value)?;
-                    }
-                    Ok(model_cls
-                        .bind(py)
-                        .call_method("model_construct", (), Some(&kwargs))?
-                        .unbind())
+                    let values = children
+                        .iter()
+                        .map(|(_, extractor)| extractor.extract_value(py, row))
+                        .collect::<PyResult<Vec<_>>>()?;
+                    constructor.build(py, values)
                 }
             }
             // --- Extended scalar types ---
@@ -1152,7 +1143,7 @@ impl<'a> ColumnExtractor<'a> {
                     Ok(Value::Array(items))
                 }
             }
-            ColumnExtractor::Struct(_arr, children, _model_cls) => {
+            ColumnExtractor::Struct(_arr, children, _constructor) => {
                 if _arr.is_null(row) {
                     Ok(Value::Null)
                 } else {
