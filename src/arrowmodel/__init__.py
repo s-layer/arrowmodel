@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import types
 import typing
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Self, cast
+from collections import Counter
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, Self, TypeAlias, cast
 
 from pydantic import AliasChoices, AliasPath, BaseModel
 
@@ -14,11 +15,40 @@ from arrowmodel import _core as _core
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    import pyarrow as pa
+
+class ArrowArrayExportable(Protocol):
+    """Anything exporting one Arrow array via the PyCapsule Interface (e.g. a RecordBatch)."""
+
+    def __arrow_c_array__(self, requested_schema: Any = None) -> tuple[Any, Any]: ...
+
+
+class ArrowStreamExportable(Protocol):
+    """
+    Anything exporting an Arrow stream via the PyCapsule Interface.
+
+    For example a pyarrow ``Table`` or ``RecordBatchReader``, a Polars
+    ``DataFrame``, or a nanoarrow array stream.
+    """
+
+    def __arrow_c_stream__(self, requested_schema: Any = None) -> Any: ...
+
+
+class ArrowSchemaExportable(Protocol):
+    """Anything exporting an Arrow schema via the PyCapsule Interface (e.g. a pyarrow Schema)."""
+
+    def __arrow_c_schema__(self) -> Any: ...
+
+
+ArrowData: TypeAlias = ArrowArrayExportable | ArrowStreamExportable
+"""Arrow record-batch data that arrowmodel converts: a RecordBatch, Table or stream."""
 
 __all__ = [
+    "ArrowArrayExportable",
+    "ArrowData",
     "ArrowModel",
     "ArrowModelConverter",
+    "ArrowSchemaExportable",
+    "ArrowStreamExportable",
     "model_convert",
     "model_iter",
     "_build_field_map",
@@ -78,24 +108,6 @@ def _is_mapping_annotation(annotation: Any) -> bool:
     if isinstance(origin, type):
         return issubclass(origin, Mapping)
     return False
-
-
-def _arrow_is_map(arrow_type: Any) -> bool:
-    """
-    True if the given Arrow ``DataType`` is a ``Map``.
-
-    Best-effort: returns False if pyarrow is not importable, or if ``arrow_type``
-    is not a pyarrow ``DataType`` (e.g. a polars/nanoarrow schema arriving via the
-    Arrow C Data Interface, where ``pa.types.is_map`` would raise rather than
-    return False). The guard is a friendly-error nicety, not a correctness
-    requirement, so any failure degrades to False.
-    """
-    try:
-        import pyarrow as pa
-
-        return pa.types.is_map(arrow_type)
-    except Exception:
-        return False
 
 
 _BASE_MODEL_CONSTRUCT: Any = BaseModel.__dict__["model_construct"].__func__
@@ -249,9 +261,16 @@ class ArrowModelConverter:
         # SCHEMA-01, SCHEMA-02, ALIAS-01: Build alias-aware field map once at init
         self._field_map: dict[str, str] = _build_field_map(model_class)
 
-    def _resolve_columns(self, schema: pa.Schema) -> list[tuple[int, str, type[BaseModel] | None]]:
+    def _resolve_columns(
+        self, schema: ArrowSchemaExportable | Sequence[tuple[str, bool]]
+    ) -> list[tuple[int, str, type[BaseModel] | None]]:
         """
         Resolve Arrow column indices from schema using the field map.
+
+        ``schema`` is any object exporting ``__arrow_c_schema__`` (e.g. a
+        pyarrow ``Schema``), or the ``(name, is_map)`` pairs of its columns.
+        Column names that occur more than once are treated as absent, as
+        pyarrow's ``Schema.get_field_index`` does.
 
         Returns ``field_specs``: list of ``(col_index, field_name, nested_model_cls)``
         for Rust. ``nested_model_cls`` is non-None when the Pydantic field's
@@ -265,6 +284,15 @@ class ArrowModelConverter:
         A field is considered resolved if ANY of its lookup names match an
         Arrow column.
         """
+        fields = (
+            list(schema)
+            if isinstance(schema, Sequence)
+            else _core.arrow_schema_fields(cast("Any", schema))
+        )
+        names = [name for name, _ in fields]
+        name_counts = Counter(names)
+        index_of = {name: i for i, name in enumerate(names) if name_counts[name] == 1}
+
         field_specs: list[tuple[int, str, type[BaseModel] | None]] = []
         # Track which Pydantic fields have been resolved (handles multiple
         # lookup names mapping to the same field, e.g. populate_by_name)
@@ -273,8 +301,8 @@ class ArrowModelConverter:
         for lookup_name, field_name in self._field_map.items():
             if field_name in resolved_fields:
                 continue
-            col_idx = schema.get_field_index(lookup_name)
-            if col_idx < 0:
+            col_idx = index_of.get(lookup_name)
+            if col_idx is None:
                 continue
             field_info = self._model_class.model_fields[field_name]
             # Guard: a dict/Mapping field cannot be fed from a Map column, which
@@ -282,9 +310,7 @@ class ArrowModelConverter:
             # Map keys may be non-string or duplicated). Raise here rather than
             # silently produce a mistyped list (fast path) or a generic Pydantic
             # error (validated path).
-            if _is_mapping_annotation(field_info.annotation) and _arrow_is_map(
-                cast("Any", schema).field(col_idx).type
-            ):
+            if _is_mapping_annotation(field_info.annotation) and fields[col_idx][1]:
                 raise TypeError(
                     f"Field {field_name!r} is annotated as a mapping (dict/Mapping), "
                     f"but the Arrow column {lookup_name!r} is a Map, which arrowmodel "
@@ -307,63 +333,45 @@ class ArrowModelConverter:
 
         if missing:
             raise ValueError(
-                f"Arrow schema is missing required columns: {missing}. "
-                f"Available columns: {schema.names}"
+                f"Arrow schema is missing required columns: {missing}. Available columns: {names}"
             )
 
         return field_specs
 
-    def convert(self, data: pa.RecordBatch | pa.Table) -> list[BaseModel]:
+    def convert(self, data: ArrowData) -> list[BaseModel]:
         """
-        Convert Arrow RecordBatch or Table to a list of Pydantic model instances.
+        Convert Arrow data to a list of Pydantic model instances.
 
         Per API-02: Returns list[Model].
-        Per INPUT-01: Accepts pyarrow RecordBatch.
-        Per INPUT-02: Accepts pyarrow Table (iterates batches internally via Rust).
+        Per INPUT-01: Accepts a RecordBatch (anything exporting ``__arrow_c_array__``).
+        Per INPUT-02: Accepts a Table, RecordBatchReader, Polars DataFrame or other
+        Arrow stream (anything exporting ``__arrow_c_stream__``); a one-shot
+        stream such as a RecordBatchReader is consumed.
         Per SCHEMA-03: Raises ValueError when required fields cannot be matched.
         Per SCHEMA-04: Extra Arrow columns silently ignored.
+        Raises TypeError for anything that is not Arrow record-batch data.
         """
-        field_specs = self._resolve_columns(data.schema)
+        source = _core.ArrowInput(data)
+        field_specs = self._resolve_columns(source.fields())
+        return source.convert_all(self._model_class, field_specs, self._validate)
 
-        if hasattr(data, "to_batches"):
-            # Table input: delegate to Rust convert_table (fast or validated)
-            table = cast("pa.Table", data)
-            if self._validate:
-                return _core.convert_table_validated(table, self._model_class, field_specs)
-            return _core.convert_table(table, self._model_class, field_specs)
-        else:
-            # RecordBatch input: delegate to Rust convert_record_batch (fast or validated)
-            batch = cast("pa.RecordBatch", data)
-            if self._validate:
-                return _core.convert_record_batch_validated(batch, self._model_class, field_specs)
-            return _core.convert_record_batch(batch, self._model_class, field_specs)
-
-    def iter(self, data: pa.RecordBatch | pa.Table) -> Iterator[BaseModel]:
+    def iter(self, data: ArrowData) -> Iterator[BaseModel]:
         """
         Lazily yield individual model instances from Arrow data.
 
-        For Tables with multiple batches, only one batch's worth of instances
-        is materialized in memory at a time, but each instance is yielded
-        individually. For RecordBatch input, behavior is equivalent to
-        iterating over convert() results.
+        Converts one record batch at a time, so only one batch's worth of
+        instances is materialised at once; a RecordBatchReader or other stream
+        is read batch by batch as you iterate. For a single RecordBatch,
+        behaviour is equivalent to iterating over convert() results.
 
         Per API-04: Iterator/generator API for lazy model yielding.
         """
-        field_specs = self._resolve_columns(data.schema)
-
-        if hasattr(data, "to_batches"):
-            batches: list[pa.RecordBatch] = cast("pa.Table", data).to_batches()
-        else:
-            batches = [cast("pa.RecordBatch", data)]
-
-        for batch in batches:
-            if self._validate:
-                results = _core.convert_record_batch_validated(
-                    batch, self._model_class, field_specs
-                )
-            else:
-                results = _core.convert_record_batch(batch, self._model_class, field_specs)
-            yield from results
+        source = _core.ArrowInput(data)
+        field_specs = self._resolve_columns(source.fields())
+        while (
+            batch := source.convert_next(self._model_class, field_specs, self._validate)
+        ) is not None:
+            yield from batch
 
 
 class ArrowModel(BaseModel):
@@ -402,7 +410,7 @@ class ArrowModel(BaseModel):
         cls._arrow_converter = ArrowModelConverter(cls, validate=False)
 
     @classmethod
-    def convert(cls, data: pa.RecordBatch | pa.Table, *, validate: bool = False) -> list[Self]:
+    def convert(cls, data: ArrowData, *, validate: bool = False) -> list[Self]:
         """
         Convert Arrow RecordBatch or Table to a list of model instances.
 
@@ -421,7 +429,7 @@ class ArrowModel(BaseModel):
         return cls._arrow_converter.convert(data)  # type: ignore[return-value]
 
     @classmethod
-    def iter(cls, data: pa.RecordBatch | pa.Table, *, validate: bool = False) -> Iterator[Self]:
+    def iter(cls, data: ArrowData, *, validate: bool = False) -> Iterator[Self]:
         """
         Lazily yield individual model instances from Arrow data.
 
@@ -443,7 +451,7 @@ class ArrowModel(BaseModel):
 
 def model_convert(
     model_class: type[BaseModel],
-    data: pa.RecordBatch | pa.Table,
+    data: ArrowData,
     *,
     validate: bool = False,
 ) -> list[BaseModel]:
@@ -463,7 +471,7 @@ def model_convert(
 
 def model_iter(
     model_class: type[BaseModel],
-    data: pa.RecordBatch | pa.Table,
+    data: ArrowData,
     *,
     validate: bool = False,
 ) -> Iterator[BaseModel]:

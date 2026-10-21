@@ -512,21 +512,30 @@ class TestMap:
         with pytest.raises(TypeError, match="list of \\(key, value\\) pairs"):
             converter.convert(map_batch)
 
-    def test_arrow_is_map_best_effort_on_non_pyarrow_type(self) -> None:
+    def test_map_columns_detected_from_the_arrow_schema(self) -> None:
         """
-        _arrow_is_map degrades to False (never raises) for a non-pyarrow type.
+        The Map guard reads column types from the Arrow C schema, not pyarrow.
 
-        The Map guard is best-effort: a schema arriving via the Arrow C Data
-        Interface from a non-pyarrow producer can present a type that
-        ``pa.types.is_map`` cannot handle. That must return False, not raise.
+        It replaced a best-effort ``pa.types.is_map`` check that silently
+        returned False for non-pyarrow producers; ``arrow_schema_fields`` flags
+        exactly the top-level Map columns, whatever exported the schema.
         """
-        from arrowmodel import _arrow_is_map
+        from arrowmodel import _core
 
-        assert _arrow_is_map(object()) is False
-        assert _arrow_is_map("not a datatype") is False
-        assert _arrow_is_map(None) is False
-        # A genuine pyarrow Map type still returns True.
-        assert _arrow_is_map(pa.map_(pa.string(), pa.int64())) is True
+        schema = pa.schema(
+            [
+                ("m", pa.map_(pa.string(), pa.int64())),
+                ("l", pa.list_(pa.struct([("key", pa.string()), ("value", pa.int64())]))),
+                ("s", pa.struct([("inner", pa.map_(pa.string(), pa.int64()))])),
+                ("i", pa.int64()),
+            ]
+        )
+        assert _core.arrow_schema_fields(schema) == [
+            ("m", True),
+            ("l", False),
+            ("s", False),
+            ("i", False),
+        ]
 
 
 # ---------------------------------------------------------------------------
