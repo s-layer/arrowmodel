@@ -158,36 +158,37 @@ rounds:
      - ``to_pylist()`` + ``model_construct``
      - Fast path vs ``to_pylist()``
    * - 100
-     - 152 µs
-     - 403 µs
-     - 512 µs
+     - 142 µs
+     - 378 µs
+     - 488 µs
      - 3.4x
    * - 1,000
-     - 1.7 ms
-     - 4.3 ms
-     - 4.8 ms
-     - 2.9x
+     - 1.6 ms
+     - 3.9 ms
+     - 5.0 ms
+     - 3.1x
    * - 38,000
-     - 77 ms
-     - 199 ms
-     - 268 ms
-     - 3.5x
+     - 80 ms
+     - 193 ms
+     - 274 ms
+     - 3.4x
 
 For flat schemas, the fast path is roughly 3x faster than the pure-Python
 approach and roughly 2.5x faster than the validated path. ``Table`` input (10
-batches) shows the same ratios. For deeply nested models (10 levels of
-struct-in-struct with lists), the fast path is still about 2x faster than the
-validated path, but slower than ``to_pylist()`` + ``model_construct``: at 1,000
-rows, 9.0 ms fast, 20.3 ms validated, 5.0 ms baseline. That
-comparison flatters the baseline: ``model_construct`` does not recurse, so the
-baseline leaves the nested levels as plain dicts, while arrowmodel builds every
-nested model instance.
+batches) shows the same ratios.
+
+For deeply nested models (10 levels of struct-in-struct with lists), the gap
+widens. ``model_construct`` does not recurse, so the pure-Python baseline for
+this benchmark calls it at every level to build the nested models, as arrowmodel
+does. At 1,000 rows the fast path takes 8.3 ms, the validated path 17.5 ms and
+the baseline 51.5 ms: the fast path is about 5-6x faster than the baseline and
+about 2x faster than the validated path.
 
 The validated path adds the cost of JSON serialisation and Pydantic's validation
 pipeline on top of the extraction. For flat schemas it is still a little faster
-than ``to_pylist()`` + ``model_construct``; for the nested benchmark it is about
-3.4-4.7x slower than that (non-recursive) baseline. Either way it gives you
-the same guarantees as calling ``model_validate_json`` directly.
+than ``to_pylist()`` + ``model_construct``, and for the nested benchmark it is
+about 3x faster than building the nested models that way. Either way it gives
+you the same guarantees as calling ``model_validate_json`` directly.
 
 A note on float NaN and Infinity
 ---------------------------------

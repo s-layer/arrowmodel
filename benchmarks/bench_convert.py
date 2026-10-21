@@ -8,6 +8,8 @@ Columns:
     fast           ArrowModelConverter(model).convert(data)
     validate=True  ArrowModelConverter(model, validate=True).convert(data)
     to_pylist+mc   [model.model_construct(**row) for row in data.to_pylist()]
+                   (nested benchmark: construct_recursive, which also builds the
+                   nested models, since model_construct does not recurse)
     vs pylist      to_pylist+mc time / fast time (higher means fast is quicker)
     vs valid.      validate=True time / fast time
 
@@ -26,7 +28,8 @@ from __future__ import annotations
 import datetime
 import sys
 import time
-from typing import TYPE_CHECKING
+import typing
+from typing import TYPE_CHECKING, Any, cast
 
 import pyarrow as pa
 from pydantic import BaseModel
@@ -285,17 +288,52 @@ def _best_of(fn: Callable[[], object], iters: int) -> float:
     return best
 
 
+def _nested_model(annotation: Any) -> type[BaseModel] | None:
+    """The BaseModel in ``Model`` or ``Model | None``, else None."""
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    for arg in typing.get_args(annotation):
+        if isinstance(arg, type) and issubclass(arg, BaseModel):
+            return arg
+    return None
+
+
+def construct_recursive(model: type[BaseModel], row: dict[str, Any]) -> BaseModel:
+    """
+    ``model_construct`` that also builds nested models from nested dicts.
+
+    ``model_construct`` does not recurse, so ``to_pylist()`` + ``model_construct``
+    alone leaves every nested level as a plain dict. This baseline does the same
+    work as arrowmodel: one model instance per struct value.
+    """
+    kwargs: dict[str, Any] = {}
+    for name, value in row.items():
+        field = model.model_fields.get(name)
+        nested = _nested_model(field.annotation) if field is not None else None
+        if nested is not None and isinstance(value, dict):
+            value = construct_recursive(nested, cast("dict[str, Any]", value))
+        kwargs[name] = value
+    return model.model_construct(**kwargs)
+
+
 def _run(
     model: type[BaseModel],
     data: pa.RecordBatch | pa.Table,
     rows: int,
     iters: int,
+    *,
+    recursive_baseline: bool = False,
 ) -> None:
     fast = ArrowModelConverter(model)
     validated = ArrowModelConverter(model, validate=True)
     t_fast = _best_of(lambda: fast.convert(data), iters)
     t_valid = _best_of(lambda: validated.convert(data), iters)
-    t_base = _best_of(lambda: [model.model_construct(**row) for row in data.to_pylist()], iters)
+    if recursive_baseline:
+        t_base = _best_of(
+            lambda: [construct_recursive(model, row) for row in data.to_pylist()], iters
+        )
+    else:
+        t_base = _best_of(lambda: [model.model_construct(**row) for row in data.to_pylist()], iters)
     _print_row(
         str(rows),
         str(iters),
@@ -314,9 +352,8 @@ def run_benchmark(sizes: list[int]) -> None:
 
 
 def run_nested_benchmark(sizes: list[int]) -> None:
-    # The to_pylist+mc baseline only constructs the top-level model (model_construct
-    # does not recurse into nested dicts), so it does less work than arrowmodel,
-    # which builds every nested model instance.
+    # model_construct does not recurse into nested dicts, so the baseline here is
+    # construct_recursive: it builds every nested model, as arrowmodel does.
     _print_header()
     for n in sizes:
         _run(
@@ -324,6 +361,7 @@ def run_nested_benchmark(sizes: list[int]) -> None:
             make_nested_batch(n),
             n,
             max(1, TARGET_INSTANCES // (n * NESTING_DEPTH)),
+            recursive_baseline=True,
         )
 
 
@@ -339,7 +377,7 @@ if __name__ == "__main__":
     sizes = [int(arg) for arg in sys.argv[1:]] if len(sys.argv) > 1 else DEFAULT_SIZES
     print("=== Flat Primitives (RecordBatch) ===\n")
     run_benchmark(sizes)
-    print("\n=== Nested (10-level struct + lists) ===\n")
+    print("\n=== Nested (10-level struct + lists; baseline builds nested models too) ===\n")
     run_nested_benchmark(sizes)
     print(f"\n=== Flat Primitives (Table, {TABLE_BATCHES} batches) ===\n")
     run_table_benchmark(sizes)
