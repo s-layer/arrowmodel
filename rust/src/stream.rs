@@ -131,14 +131,19 @@ impl ArrowInput {
     #[new]
     fn new(data: &Bound<'_, PyAny>) -> PyResult<Self> {
         let py = data.py();
-        // A RecordBatch exports both protocols; read it as one batch.
+        // A RecordBatch exports both protocols; read it as one batch. If the
+        // array export fails (a multi-chunk nanoarrow Array refuses it), fall
+        // through to the stream when there is one.
+        let mut array_error = None;
         if data.hasattr(pyo3::intern!(py, "__arrow_c_array__"))? {
-            let (array, field) = data
-                .extract::<PyArray>()
-                .map_err(|e| unsupported_input(data, Some(e.to_string())))?
-                .into_inner();
-            let reader = ArrayIterator::new(vec![Ok(array)], field);
-            return Self::from_reader(data, Box::new(reader));
+            match data.extract::<PyArray>() {
+                Ok(array) => {
+                    let (array, field) = array.into_inner();
+                    let reader = ArrayIterator::new(vec![Ok(array)], field);
+                    return Self::from_reader(data, Box::new(reader));
+                }
+                Err(e) => array_error = Some(e.to_string()),
+            }
         }
         if data.hasattr(pyo3::intern!(py, "__arrow_c_stream__"))? {
             let reader = data
@@ -146,6 +151,9 @@ impl ArrowInput {
                 .map_err(|e| unsupported_input(data, Some(e.to_string())))?
                 .into_reader()?;
             return Self::from_reader(data, reader);
+        }
+        if array_error.is_some() {
+            return Err(unsupported_input(data, array_error));
         }
         Err(unsupported_input(data, None))
     }
