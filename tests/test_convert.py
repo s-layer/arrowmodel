@@ -880,6 +880,44 @@ class TestTemporalTypes:
         ]
         assert fast.created_at == validated.created_at
 
+    def test_timestamp_aware_validated_keeps_the_zones_wall_clock(
+        self, timestamp_tz_batch: pa.RecordBatch
+    ) -> None:
+        """
+        Validated mode gives the column zone's local time and offset, not the UTC clock.
+
+        That is what ``model_validate`` on ``to_pylist()`` gives. JSON carries an offset,
+        not a zone name, so the tzinfo is a fixed offset.
+        """
+        expected = timestamp_tz_batch.to_pylist()[0]["created_at"]
+        validated = ArrowModelConverter(TimestampModel, validate=True).convert(timestamp_tz_batch)
+        created_at = cast("TimestampModel", validated[0]).created_at
+        assert created_at is not None
+        assert created_at.isoformat() == expected.isoformat() == "2024-01-15T05:30:00-05:00"
+        assert created_at.utcoffset() == datetime.timedelta(hours=-5)
+
+    def test_timestamp_aware_validated_offset_with_seconds_goes_as_utc(self) -> None:
+        """
+        Validated mode sends an instant whose zone offset has seconds as UTC.
+
+        Pydantic cannot parse an offset with seconds, such as Kolkata's 1900 local mean time
+        (+05:53:20), so those instants keep the instant and lose the local clock.
+        """
+        instant = datetime.datetime(1900, 6, 1, 12, 0, tzinfo=datetime.UTC)
+        batch = pa.record_batch(
+            {"created_at": pa.array([instant], type=pa.timestamp("us", tz="Asia/Kolkata"))}
+        )
+        local = batch.to_pylist()[0]["created_at"]
+        assert local.utcoffset().total_seconds() % 60 != 0  # the case under test
+        fast = cast("TimestampModel", ArrowModelConverter(TimestampModel).convert(batch)[0])
+        validated = cast(
+            "TimestampModel", ArrowModelConverter(TimestampModel, validate=True).convert(batch)[0]
+        )
+        fast, validated = fast.created_at, validated.created_at
+        assert fast == validated == instant
+        assert fast is not None and fast.utcoffset() == local.utcoffset()
+        assert validated is not None and validated.utcoffset() == datetime.timedelta(0)
+
     def test_nanosecond_truncation(self, timestamp_ns_batch: pa.RecordBatch) -> None:
         """TEMP-05: Nanosecond timestamp truncates to microsecond precision."""
         results = ArrowModelConverter(TimestampModel).convert(timestamp_ns_batch)
@@ -934,6 +972,40 @@ class TestDictionaryType:
         assert results[0].category == "a"
         assert results[1].category is None
         assert results[2].category == "b"
+
+    @pytest.mark.parametrize("validate", [False, True])
+    def test_dictionary_inside_a_list(self, validate: bool) -> None:
+        """CPLX-04: a list of dictionary-encoded strings decodes like a list of strings."""
+
+        class TagsModel(BaseModel):
+            tags: list[str | None] | None = None
+
+        values = cast("pa.Array[Any]", pa.array(["a", None, "b", "a"]).dictionary_encode())
+        batch = pa.record_batch({"tags": pa.ListArray.from_arrays([0, 2, 2, 4], values)})
+        results = ArrowModelConverter(TagsModel, validate=validate).convert(batch)
+        assert [r.tags for r in results] == [["a", None], [], ["b", "a"]]
+
+    @pytest.mark.parametrize("validate", [False, True])
+    def test_dictionary_inside_a_struct(self, validate: bool) -> None:
+        """CPLX-04: a dictionary-encoded struct member decodes like a plain one."""
+
+        class Inner(BaseModel):
+            label: str | None = None
+            n: int | None = None
+
+        class Outer(BaseModel):
+            inner: Inner | None = None
+
+        labels = cast("pa.Array[Any]", pa.array(["x", None, "y"]).dictionary_encode())
+        struct = pa.StructArray.from_arrays([labels, pa.array([1, 2, 3])], ["label", "n"])
+        results = ArrowModelConverter(Outer, validate=validate).convert(
+            pa.record_batch({"inner": struct})
+        )
+        assert [r.inner for r in results] == [
+            Inner(label="x", n=1),
+            Inner(label=None, n=2),
+            Inner(label="y", n=3),
+        ]
 
 
 class TestNullType:

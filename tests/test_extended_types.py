@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime
 import decimal
+from typing import Any, cast
 
 import pyarrow as pa
 import pytest
@@ -564,6 +565,23 @@ class TestRunEndEncoded:
         assert results[0].name == "aaa"
         assert results[2].name == "bbb"
         assert results[4].name == "ccc"
+
+    @pytest.mark.parametrize("validate", [False, True])
+    def test_ree_inside_a_list(self, validate: bool) -> None:
+        """REE list items are unpacked like a top-level REE column."""
+
+        class ListModel(BaseModel):
+            x: list[str | None] | None = None
+
+        ree = cast(
+            "pa.Array[Any]",
+            pa.RunEndEncodedArray.from_arrays(
+                pa.array([2, 4], type=pa.int64()), pa.array(["a", "b"])
+            ),
+        )
+        table = pa.table({"x": pa.ListArray.from_arrays([0, 1, 4], ree)})
+        results = ArrowModelConverter(ListModel, validate=validate).convert(table)
+        assert [r.x for r in results] == [["a"], ["a", "b", "b"]]
 
 
 # ---------------------------------------------------------------------------

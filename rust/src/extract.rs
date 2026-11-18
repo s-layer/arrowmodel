@@ -1079,12 +1079,35 @@ impl<'a> ColumnExtractor<'a> {
                     }
                 }
             }
-            ColumnExtractor::TimestampAware(arr, unit, _tz_obj) => {
+            ColumnExtractor::TimestampAware(arr, unit, tz_obj) => {
                 if arr.is_null(row) {
                     Ok(Value::Null)
                 } else {
-                    // Arrow timestamps with tz are stored in UTC.
-                    // Append +00:00 so Pydantic produces tz-aware datetime.
+                    // Send the instant in the column's zone, with that zone's
+                    // offset, so the model gets the same wall clock and offset
+                    // as the fast path and as `to_pylist()`. JSON carries an
+                    // offset, not a zone name, so Pydantic builds a fixed-offset
+                    // tzinfo. Sending the UTC wall clock with +00:00 kept the
+                    // instant but changed the hour the model saw.
+                    //
+                    // Pydantic cannot parse an offset with seconds (historic
+                    // local mean time, e.g. +05:21:10). For those the instant
+                    // goes as UTC, as it always did: same instant, UTC clock.
+                    let local = extract_aware_datetime(py, *arr, row, *unit, tz_obj)?;
+                    let local = local.bind(py);
+                    if local.is_none() {
+                        return Ok(Value::Null);
+                    }
+                    let offset: f64 = local
+                        .call_method0(pyo3::intern!(py, "utcoffset"))?
+                        .call_method0(pyo3::intern!(py, "total_seconds"))?
+                        .extract()?;
+                    if offset % 60.0 == 0.0 {
+                        let iso: String = local
+                            .call_method0(pyo3::intern!(py, "isoformat"))?
+                            .extract()?;
+                        return Ok(Value::String(iso));
+                    }
                     match extract_naive_dt_value(*arr, row, *unit) {
                         Some(dt) => {
                             let s = dt.format("%Y-%m-%dT%H:%M:%S%.f").to_string();

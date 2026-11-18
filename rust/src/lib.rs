@@ -1,9 +1,10 @@
 use arrow_array::ArrayRef;
 use arrow_array::RecordBatch;
-use arrow_schema::DataType;
+use arrow_schema::{DataType, FieldRef};
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3_arrow::PyRecordBatch;
+use std::sync::Arc;
 
 type PyObject = Py<PyAny>;
 
@@ -15,10 +16,33 @@ mod stream;
 /// `ArrowModelConverter._resolve_columns`.
 pub(crate) type FieldSpec = (usize, String, Option<PyObject>);
 
-/// Unpack dictionary-encoded columns to their value type arrays.
-/// Non-dictionary columns are returned as-is (cloned Arc reference).
-/// This resolves the lifetime issue: owned unpacked arrays live in the
-/// returned Vec, and extractors borrow from them.
+/// The type a column decodes to: every dictionary-encoded or run-end encoded
+/// type, at any depth (list items, struct members, map entries), replaced by
+/// its value type. Union children are left alone: arrow-cast cannot cast unions.
+fn decoded_type(dt: &DataType) -> DataType {
+    let field = |f: &FieldRef| -> FieldRef {
+        Arc::new(
+            f.as_ref()
+                .clone()
+                .with_data_type(decoded_type(f.data_type())),
+        )
+    };
+    match dt {
+        DataType::Dictionary(_, value_type) => decoded_type(value_type),
+        DataType::RunEndEncoded(_, value_field) => decoded_type(value_field.data_type()),
+        DataType::List(f) => DataType::List(field(f)),
+        DataType::LargeList(f) => DataType::LargeList(field(f)),
+        DataType::FixedSizeList(f, n) => DataType::FixedSizeList(field(f), *n),
+        DataType::Map(f, sorted) => DataType::Map(field(f), *sorted),
+        DataType::Struct(fields) => DataType::Struct(fields.iter().map(field).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Unpack dictionary-encoded and run-end encoded data, at any depth, to plain
+/// arrays of the value type (see `decoded_type`). Other columns are returned
+/// as-is (cloned Arc reference). This resolves the lifetime issue: owned
+/// unpacked arrays live in the returned Vec, and extractors borrow from them.
 fn unpack_columns(
     columns: &[ArrayRef],
     schema: &arrow_schema::SchemaRef,
@@ -29,23 +53,15 @@ fn unpack_columns(
         .map(|&idx| {
             let col = &columns[idx];
             let dt = schema.field(idx).data_type();
-            match dt {
-                DataType::Dictionary(_, value_type) => {
-                    arrow_cast::cast(col.as_ref(), value_type.as_ref()).map_err(|e| {
-                        PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
-                            "Failed to unpack dictionary array: {e}"
-                        ))
-                    })
-                }
-                DataType::RunEndEncoded(_, value_field) => {
-                    arrow_cast::cast(col.as_ref(), value_field.data_type()).map_err(|e| {
-                        PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
-                            "Failed to unpack run-end encoded array: {e}"
-                        ))
-                    })
-                }
-                _ => Ok(col.clone()),
+            let target = decoded_type(dt);
+            if target == *dt {
+                return Ok(col.clone());
             }
+            arrow_cast::cast(col.as_ref(), &target).map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                    "Failed to unpack dictionary or run-end encoded data in {dt}: {e}"
+                ))
+            })
         })
         .collect()
 }
@@ -99,14 +115,9 @@ pub(crate) fn convert_batch(
         .iter()
         .zip(field_specs)
         .map(|(col, (orig_idx, _, nested_model))| {
-            let dt = schema.field(*orig_idx).data_type();
-            // For dictionary columns, use the value type for the extractor
-            let effective_dt = match dt {
-                DataType::Dictionary(_, value_type) => value_type.as_ref(),
-                DataType::RunEndEncoded(_, value_field) => value_field.data_type(),
-                other => other,
-            };
-            extract::prepare_extractor(py, col.as_ref(), effective_dt, nested_model.as_ref())
+            // The extractor sees the decoded type, matching the unpacked column.
+            let effective_dt = decoded_type(schema.field(*orig_idx).data_type());
+            extract::prepare_extractor(py, col.as_ref(), &effective_dt, nested_model.as_ref())
         })
         .collect::<Result<_, _>>()?;
 
