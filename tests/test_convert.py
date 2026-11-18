@@ -22,7 +22,15 @@ from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pytest
-from pydantic import AliasChoices, AliasGenerator, AliasPath, BaseModel, ConfigDict, Field
+from pydantic import (
+    AliasChoices,
+    AliasGenerator,
+    AliasPath,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+)
 
 from arrowmodel import ArrowModelConverter, _build_field_map, model_convert
 
@@ -1531,23 +1539,26 @@ class TestValidationErrors:
         """VALID-03: String values in int column with validate=True raises ValidationError."""
         batch = pa.record_batch({"age": pa.array(["not_a_number", "also_not"])})
         converter = ArrowModelConverter(StrictAgeModel, validate=True)
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(ValidationError) as exc_info:
             converter.convert(batch)
-        # Should be a Pydantic ValidationError
-        assert (
-            "validation" in type(exc_info.value).__name__.lower()
-            or "validation" in str(exc_info.value).lower()
-        )
+        # Pydantic's own error, for the first bad row's `age`.
+        errors = exc_info.value.errors()
+        assert [(e["type"], e["loc"], e["input"]) for e in errors] == [
+            ("int_parsing", ("age",), "not_a_number")
+        ]
 
     def test_validation_error_message(self) -> None:
         """VALID-03: ValidationError contains useful info about the failure."""
         batch = pa.record_batch({"age": pa.array(["bad_value"])})
         converter = ArrowModelConverter(StrictAgeModel, validate=True)
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(ValidationError) as exc_info:
             converter.convert(batch)
         error_str = str(exc_info.value)
-        # Should mention the field or type issue
-        assert len(error_str) > 10  # meaningful error message
+        # Names the model, the field, the bad value and what was expected.
+        assert "StrictAgeModel" in error_str
+        assert "age" in error_str
+        assert "bad_value" in error_str
+        assert "Input should be a valid integer" in error_str
 
 
 class TestIteratorAPI:

@@ -602,3 +602,7 @@ def dense_union_batch() -> pa.RecordBatch:
     ]
     arr = pa.UnionArray.from_dense(types, offsets, children)
     return pa.record_batch({"val": arr})
+
+
+# Under CI, a skipped test fails the run (tests/ci_skips.py).
+pytest_plugins = ["tests.ci_skips"]

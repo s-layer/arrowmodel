@@ -173,7 +173,7 @@ Do not make direct repo edits outside a GSD workflow unless the user explicitly 
 
 Write `uses:` refs as tags (`@v7.0.1`), not commit SHAs: the lockfile holds the commit.
 
-Some actions here are referenced by branch rather than tag (`dtolnay/rust-toolchain@stable`), because the branch name selects what they install. Dependabot doesn't move those pins. To advance them to the branch's current commit, run `gh actions-lock --relock --no-interactive` and review the lockfile diff.
+Reference actions by tag, never by branch. A branch such as `dtolnay/rust-toolchain@stable` gets force-pushed, so its locked commit stops verifying and every job fails in setup, and Dependabot never moves it. The workflows install Rust with a `rustup` step for this reason.
 
 The lockfile doesn't cover the reusable workflow claude-review calls from another repository (`anentropic/github-reviewbot/.github/workflows/review.yml@main`): it runs at whatever `main` points to, and changing that ref needs no lockfile update. The release workflow's PyPI publish step runs a local action generated inside `pypa/gh-action-pypi-publish`, which the tool also can't follow; its warning about that is expected.
 

@@ -22,13 +22,11 @@ workflows:
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
         - 'astral-sh/setup-uv@v7.6.0'
-        - 'dtolnay/rust-toolchain@stable'
         - 'mishakav/pytest-coverage-comment@v1.8.0'
     '.github/workflows/quality.yml':
         - 'actions/cache@v6.1.0'
         - 'actions/checkout@v7.0.1'
         - 'astral-sh/setup-uv@v7.6.0'
-        - 'dtolnay/rust-toolchain@stable'
     '.github/workflows/release.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/download-artifact@v8.0.2'
@@ -95,11 +93,6 @@ dependencies:
         commit: 'sha1-37802adc94f370d6bfd71619e3f0bf239e1f3b78'
         owner_id: 115962839
         repo_id: 846733598
-    'dtolnay/rust-toolchain@stable':
-        ref: 'stable'
-        commit: 'sha1-b725eda525362e7cf34af9a7243cac1e3f01a7ec'
-        owner_id: 1940490
-        repo_id: 260749683
     'mishakav/pytest-coverage-comment@v1.8.0':
         ref: 'v1.8.0'
         commit: 'sha1-e48ae95fa406cefacc7fbdd79949122795569961'
