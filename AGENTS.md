@@ -14,7 +14,8 @@ This document provides context for AI assistants (like Claude Code) working on t
 All code must pass these checks before committing. We use [prek](https://prek.j178.dev/) — a fast, Rust-based runner for `.pre-commit-config.yaml` hooks:
 
 ```bash
-prek run --all-files  # Runs all hooks (typecheck, lint, format, test)
+prek run --all-files  # Runs the hooks: typecheck, lint, format. Not the tests.
+uv run pytest         # The tests, which no prek hook runs
 ```
 
 Or run individually:
@@ -73,8 +74,8 @@ Apply formatting: `uv run ruff format`
 # Development setup
 uv sync --dev
 
-# Run all quality checks
-prek run --all-files
+# Run all quality checks (prek runs no tests, so pytest is separate)
+prek run --all-files && uv run pytest
 
 # Run quality checks individually
 uv run basedpyright && uv run ruff check && uv run ruff format --check && uv run pytest
