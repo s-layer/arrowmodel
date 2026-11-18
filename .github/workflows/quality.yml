@@ -20,10 +20,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
+      # rustup ships on the runner image. A branch-pinned action (dtolnay/rust-toolchain@stable)
+      # broke lockfile verification whenever upstream force-pushed that branch.
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
 
       - name: Cache Cargo registry
         uses: actions/cache@v6.1.0
