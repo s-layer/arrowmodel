@@ -880,6 +880,79 @@ class TestTemporalTypes:
         ]
         assert fast.created_at == validated.created_at
 
+    def test_timestamp_aware_validated_keeps_the_zones_wall_clock(
+        self, timestamp_tz_batch: pa.RecordBatch
+    ) -> None:
+        """
+        Validated mode gives the column zone's local time and offset, not the UTC clock.
+
+        That is what ``model_validate`` on ``to_pylist()`` gives. JSON carries an offset,
+        not a zone name, so the tzinfo is a fixed offset.
+        """
+        expected = timestamp_tz_batch.to_pylist()[0]["created_at"]
+        validated = ArrowModelConverter(TimestampModel, validate=True).convert(timestamp_tz_batch)
+        created_at = cast("TimestampModel", validated[0]).created_at
+        assert created_at is not None
+        assert created_at.isoformat() == expected.isoformat() == "2024-01-15T05:30:00-05:00"
+        assert created_at.utcoffset() == datetime.timedelta(hours=-5)
+
+    def test_timestamp_aware_validated_offset_with_seconds_goes_as_utc(self) -> None:
+        """
+        Validated mode sends an instant whose zone offset has seconds as UTC.
+
+        Pydantic cannot parse an offset with seconds, such as Kolkata's 1900 offset (+05:21:10,
+        Madras time, until 1906), so those instants keep the instant and lose the local clock.
+        """
+        instant = datetime.datetime(1900, 6, 1, 12, 0, tzinfo=datetime.UTC)
+        batch = pa.record_batch(
+            {"created_at": pa.array([instant], type=pa.timestamp("us", tz="Asia/Kolkata"))}
+        )
+        local = batch.to_pylist()[0]["created_at"]
+        assert local.utcoffset().total_seconds() % 60 != 0  # the case under test
+        fast = cast("TimestampModel", ArrowModelConverter(TimestampModel).convert(batch)[0])
+        validated = cast(
+            "TimestampModel", ArrowModelConverter(TimestampModel, validate=True).convert(batch)[0]
+        )
+        fast, validated = fast.created_at, validated.created_at
+        assert fast == validated == instant
+        assert fast is not None and fast.utcoffset() == local.utcoffset()
+        assert validated is not None and validated.utcoffset() == datetime.timedelta(0)
+
+    @pytest.mark.parametrize(
+        ("instant", "zone"),
+        [
+            (datetime.datetime(9999, 12, 31, 23, 0, tzinfo=datetime.UTC), "Asia/Kolkata"),
+            (datetime.datetime(1, 1, 1, 0, 0, tzinfo=datetime.UTC), "America/New_York"),
+        ],
+    )
+    def test_timestamp_aware_validated_outside_datetime_range_goes_as_utc(
+        self, instant: datetime.datetime, zone: str
+    ) -> None:
+        """Validated mode sends an instant whose local time is past year 1 or 9999 as UTC."""
+        batch = pa.record_batch(
+            {"created_at": pa.array([instant], type=pa.timestamp("us", tz=zone))}
+        )
+        validated = cast(
+            "TimestampModel", ArrowModelConverter(TimestampModel, validate=True).convert(batch)[0]
+        )
+        assert validated.created_at == instant
+        assert validated.created_at is not None
+        assert validated.created_at.utcoffset() == datetime.timedelta(0)
+
+    @pytest.mark.parametrize("zone", ["UTC", "Etc/UTC"])
+    def test_timestamp_utc_validated(self, zone: str) -> None:
+        """Validated mode sends a UTC column's instants as UTC, as the fast path gives them."""
+        instant = datetime.datetime(2024, 1, 15, 10, 30, 0, 123456, tzinfo=datetime.UTC)
+        batch = pa.record_batch(
+            {"created_at": pa.array([instant, None], type=pa.timestamp("us", tz=zone))}
+        )
+        fast = ArrowModelConverter(TimestampModel).convert(batch)
+        validated = ArrowModelConverter(TimestampModel, validate=True).convert(batch)
+        assert [cast("TimestampModel", m).created_at for m in validated] == [instant, None]
+        for f, v in zip(fast, validated, strict=True):
+            f_at, v_at = cast("TimestampModel", f).created_at, cast("TimestampModel", v).created_at
+            assert (f_at.isoformat() if f_at else None) == (v_at.isoformat() if v_at else None)
+
     def test_nanosecond_truncation(self, timestamp_ns_batch: pa.RecordBatch) -> None:
         """TEMP-05: Nanosecond timestamp truncates to microsecond precision."""
         results = ArrowModelConverter(TimestampModel).convert(timestamp_ns_batch)
@@ -934,6 +1007,107 @@ class TestDictionaryType:
         assert results[0].category == "a"
         assert results[1].category is None
         assert results[2].category == "b"
+
+    @pytest.mark.parametrize("validate", [False, True])
+    def test_dictionary_inside_a_list(self, validate: bool) -> None:
+        """CPLX-04: a list of dictionary-encoded strings decodes like a list of strings."""
+
+        class TagsModel(BaseModel):
+            tags: list[str | None] | None = None
+
+        values = cast("pa.Array[Any]", pa.array(["a", None, "b", "a"]).dictionary_encode())
+        batch = pa.record_batch({"tags": pa.ListArray.from_arrays([0, 2, 2, 4], values)})
+        results = ArrowModelConverter(TagsModel, validate=validate).convert(batch)
+        assert [r.tags for r in results] == [["a", None], [], ["b", "a"]]
+
+    @pytest.mark.parametrize("validate", [False, True])
+    def test_dictionary_inside_a_struct(self, validate: bool) -> None:
+        """CPLX-04: a dictionary-encoded struct member decodes like a plain one."""
+
+        class Inner(BaseModel):
+            label: str | None = None
+            n: int | None = None
+
+        class Outer(BaseModel):
+            inner: Inner | None = None
+
+        labels = cast("pa.Array[Any]", pa.array(["x", None, "y"]).dictionary_encode())
+        struct = pa.StructArray.from_arrays([labels, pa.array([1, 2, 3])], ["label", "n"])
+        results = ArrowModelConverter(Outer, validate=validate).convert(
+            pa.record_batch({"inner": struct})
+        )
+        assert [r.inner for r in results] == [
+            Inner(label="x", n=1),
+            Inner(label=None, n=2),
+            Inner(label="y", n=3),
+        ]
+
+    @pytest.mark.parametrize("validate", [False, True])
+    def test_dictionary_inside_a_map(self, validate: bool) -> None:
+        """CPLX-04: dictionary-encoded map values decode like plain ones."""
+
+        class Row(BaseModel):
+            tags: list[tuple[str, str | None]] | None = None
+
+        values = cast("pa.Array[Any]", pa.array(["x", "y", None]).dictionary_encode())
+        tags = cast(
+            "pa.Array[Any]",
+            pa.MapArray.from_arrays(pa.array([0, 2, 3]), pa.array(["a", "b", "c"]), values),
+        )
+        results = ArrowModelConverter(Row, validate=validate).convert(
+            pa.record_batch({"tags": tags})
+        )
+        assert [r.tags for r in results] == [[("a", "x"), ("b", "y")], [("c", None)]]
+
+    @pytest.mark.parametrize("validate", [False, True])
+    def test_dictionary_inside_a_fixed_size_list(self, validate: bool) -> None:
+        """CPLX-04: a fixed-size list of dictionary-encoded values decodes like a plain one."""
+
+        class Row(BaseModel):
+            pair: list[str | None] | None = None
+
+        values = cast("pa.Array[Any]", pa.array(["x", None, "y", "x"]).dictionary_encode())
+        pairs = cast("pa.Array[Any]", pa.FixedSizeListArray.from_arrays(values, 2))
+        results = ArrowModelConverter(Row, validate=validate).convert(
+            pa.record_batch({"pair": pairs})
+        )
+        assert [r.pair for r in results] == [["x", None], ["y", "x"]]
+
+    @pytest.mark.parametrize("validate", [False, True])
+    def test_polars_list_of_categorical(self, validate: bool) -> None:
+        """CPLX-04: Polars exports List(Categorical) with UInt32 keys and view strings."""
+        pl = pytest.importorskip("polars")
+
+        class Row(BaseModel):
+            labels: list[str | None] | None = None
+
+        frame = pl.DataFrame(
+            {"labels": [["a", "b"], None, ["b", None]]},
+            schema={"labels": pl.List(pl.Categorical)},
+        )
+        results = ArrowModelConverter(Row, validate=validate).convert(frame)
+        assert [r.labels for r in results] == frame.to_dict(as_series=False)["labels"]
+
+    @pytest.mark.parametrize("validate", [False, True])
+    def test_invalid_nested_dictionary_raises(self, validate: bool) -> None:
+        """
+        A nested dictionary key past the dictionary's end raises ValueError, not a panic.
+
+        pyarrow builds one: a struct with a dictionary member and only a null row gets key 0
+        into an empty dictionary.
+        """
+
+        class Inner(BaseModel):
+            a: str | None = None
+
+        class Outer(BaseModel):
+            inner: Inner | None = None
+
+        struct = pa.array([None], type=pa.struct([("a", pa.dictionary(pa.int32(), pa.string()))]))
+        with pytest.raises(ValueError, match="Invalid Arrow data"):
+            ArrowModelConverter(Outer, validate=validate).convert(
+                pa.record_batch({"inner": struct})
+            )
 
 
 class TestNullType:

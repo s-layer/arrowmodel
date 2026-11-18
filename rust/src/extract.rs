@@ -47,7 +47,9 @@ pub enum ColumnExtractor<'a> {
     // Temporal types
     Date32(&'a arrow_array::Date32Array),
     TimestampNaive(&'a dyn Array, TimeUnit),
-    TimestampAware(&'a dyn Array, TimeUnit, PyObject),
+    /// The zone object, and whether the zone is UTC (the validated path then
+    /// formats the instant in Rust; see `to_json_value`).
+    TimestampAware(&'a dyn Array, TimeUnit, PyObject, bool),
     Duration(&'a dyn Array, TimeUnit),
     // Complex types
     /// List element extraction: stores child DataType to create temporary
@@ -306,7 +308,11 @@ fn prepare_extractor_with_plan<'a>(
             let zoneinfo = py.import("zoneinfo")?;
             let zi_cls = zoneinfo.getattr("ZoneInfo")?;
             let tz_obj: PyObject = zi_cls.call1((tz_str.as_ref(),))?.unbind();
-            Ok(ColumnExtractor::TimestampAware(col, *unit, tz_obj))
+            let utc = matches!(
+                tz_str.as_ref(),
+                "UTC" | "Etc/UTC" | "Etc/UCT" | "UCT" | "Zulu"
+            );
+            Ok(ColumnExtractor::TimestampAware(col, *unit, tz_obj, utc))
         }
         DataType::Duration(unit) => Ok(ColumnExtractor::Duration(col, *unit)),
         DataType::List(field) => {
@@ -588,7 +594,7 @@ impl<'a> ColumnExtractor<'a> {
                     extract_naive_datetime(py, *arr, row, *unit)
                 }
             }
-            ColumnExtractor::TimestampAware(arr, unit, tz_obj) => {
+            ColumnExtractor::TimestampAware(arr, unit, tz_obj, _) => {
                 if arr.is_null(row) {
                     Ok(py.None())
                 } else {
@@ -1079,20 +1085,56 @@ impl<'a> ColumnExtractor<'a> {
                     }
                 }
             }
-            ColumnExtractor::TimestampAware(arr, unit, _tz_obj) => {
+            ColumnExtractor::TimestampAware(arr, unit, tz_obj, utc) => {
                 if arr.is_null(row) {
-                    Ok(Value::Null)
-                } else {
-                    // Arrow timestamps with tz are stored in UTC.
-                    // Append +00:00 so Pydantic produces tz-aware datetime.
-                    match extract_naive_dt_value(*arr, row, *unit) {
-                        Some(dt) => {
-                            let s = dt.format("%Y-%m-%dT%H:%M:%S%.f").to_string();
-                            Ok(Value::String(format!("{s}+00:00")))
-                        }
-                        None => Ok(Value::Null),
-                    }
+                    return Ok(Value::Null);
                 }
+                // The instant as UTC, formatted in Rust.
+                let as_utc = || match extract_naive_dt_value(*arr, row, *unit) {
+                    Some(dt) => {
+                        let s = dt.format("%Y-%m-%dT%H:%M:%S%.f").to_string();
+                        Value::String(format!("{s}+00:00"))
+                    }
+                    None => Value::Null,
+                };
+                // Send the instant in the column's zone, with that zone's
+                // offset, so the model gets the same wall clock and offset
+                // as the fast path and as `to_pylist()`. JSON carries an
+                // offset, not a zone name, so Pydantic builds a fixed-offset
+                // tzinfo. Sending the UTC wall clock with +00:00 kept the
+                // instant but changed the hour the model saw.
+                //
+                // A UTC column's local time is the UTC time, so it is formatted
+                // here with no Python call. The instant also goes as UTC when
+                // the local time falls outside Python's datetime range
+                // (OverflowError), and when the zone's offset has seconds
+                // (historic local mean time, e.g. +05:21:10), which Pydantic
+                // cannot parse: same instant, UTC clock.
+                if *utc {
+                    return Ok(as_utc());
+                }
+                let local = match extract_aware_datetime(py, *arr, row, *unit, tz_obj) {
+                    Ok(local) => local,
+                    Err(e) if e.is_instance_of::<pyo3::exceptions::PyOverflowError>(py) => {
+                        return Ok(as_utc());
+                    }
+                    Err(e) => return Err(e),
+                };
+                let local = local.bind(py);
+                if local.is_none() {
+                    return Ok(Value::Null);
+                }
+                let offset: f64 = local
+                    .call_method0(pyo3::intern!(py, "utcoffset"))?
+                    .call_method0(pyo3::intern!(py, "total_seconds"))?
+                    .extract()?;
+                if offset % 60.0 == 0.0 {
+                    let iso: String = local
+                        .call_method0(pyo3::intern!(py, "isoformat"))?
+                        .extract()?;
+                    return Ok(Value::String(iso));
+                }
+                Ok(as_utc())
             }
             ColumnExtractor::Duration(arr, unit) => {
                 if arr.is_null(row) {

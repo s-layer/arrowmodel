@@ -186,6 +186,16 @@ Timestamp types
 Timezone-aware timestamps use Python's ``ZoneInfo`` for the timezone. IANA
 timezone strings (like ``"America/New_York"``) are preserved.
 
+In validated mode the value reaches Pydantic as JSON, which carries an offset
+but not a zone name. The model gets the same instant, wall clock and offset as
+the fast path (``2024-01-15T05:30:00-05:00`` for a New York column), with a
+fixed-offset ``tzinfo`` in place of the ``ZoneInfo``. One exception: Pydantic
+cannot parse an offset with seconds, which some zones had before standard time
+(Kolkata used +05:21:10, Madras time, until 1906). Those values arrive as the
+same instant in UTC, as do values whose local time falls outside Python's
+``datetime`` range (years 1 to 9999). A UTC column's values are always sent as
+UTC.
+
 .. warning::
 
    Nanosecond-precision timestamps are truncated to microsecond precision
@@ -231,11 +241,13 @@ Binary types
 
 .. note::
 
-   In validated mode (``validate=True``), binary data is serialised as
-   base64-encoded strings in the JSON intermediate. Pydantic's
-   ``model_validate_json`` decodes base64 back to raw ``bytes`` when the
-   field type is ``bytes``, so the model field receives the correct raw
-   binary in both paths.
+   In validated mode (``validate=True``), binary data is sent as
+   base64-encoded text in the JSON intermediate, because raw bytes are not
+   valid JSON. Pydantic does not decode it unless you ask: a plain ``bytes``
+   field receives the base64 text itself. To get the raw bytes back, set
+   ``model_config = ConfigDict(val_json_bytes="base64")`` on the model, or
+   annotate the field as ``pydantic.Base64Bytes``. The fast path always
+   returns the raw bytes.
 
 List and container types
 ------------------------
@@ -313,7 +325,10 @@ Dictionary-encoded columns
 
 Dictionary-encoded columns are transparently decoded. A
 ``Dictionary(Int32, Utf8)`` column produces ``str`` values, the same as a
-plain ``Utf8`` column.
+plain ``Utf8`` column. This holds at any depth: a dictionary-encoded list item,
+struct member or map entry decodes the same way, so a Polars
+``List(Categorical)`` column gives ``list[str]``. Run-end encoded data is
+unpacked the same way.
 
 Interval types
 --------------
