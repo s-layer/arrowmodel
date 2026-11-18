@@ -191,8 +191,10 @@ but not a zone name. The model gets the same instant, wall clock and offset as
 the fast path (``2024-01-15T05:30:00-05:00`` for a New York column), with a
 fixed-offset ``tzinfo`` in place of the ``ZoneInfo``. One exception: Pydantic
 cannot parse an offset with seconds, which some zones had before standard time
-(Kolkata's local mean time was +05:53:20 until 1941). Those values arrive as
-the same instant in UTC.
+(Kolkata used +05:21:10, Madras time, until 1906). Those values arrive as the
+same instant in UTC, as do values whose local time falls outside Python's
+``datetime`` range (years 1 to 9999). A UTC column's values are always sent as
+UTC.
 
 .. warning::
 

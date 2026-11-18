@@ -249,16 +249,21 @@ def same(value: Any) -> Any:
 
 def _minute_offsets(value: Any) -> Any:
     """
-    Documented: validated mode sends an aware timestamp whose zone offset has seconds
-    (historic local mean time, e.g. +05:21:10) as UTC, because Pydantic cannot parse it.
+    Apply the documented validated-mode difference for offsets with seconds.
+
+    Validated mode sends an aware timestamp whose zone offset has seconds (historic local mean
+    time, e.g. +05:21:10) as UTC, because Pydantic cannot parse it.
     """
     if isinstance(value, dict):
         return {k: _minute_offsets(v) for k, v in cast("dict[str, Any]", value).items()}
     if isinstance(value, list):
         return [_minute_offsets(v) for v in cast("list[Any]", value)]
-    if isinstance(value, dt.datetime) and (offset := value.utcoffset()) is not None:
-        if offset.total_seconds() % 60:
-            return value.astimezone(dt.UTC)
+    if (
+        isinstance(value, dt.datetime)
+        and (offset := value.utcoffset()) is not None
+        and offset.total_seconds() % 60
+    ):
+        return value.astimezone(dt.UTC)
     return value
 
 

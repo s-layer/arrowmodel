@@ -57,6 +57,14 @@ fn unpack_columns(
             if target == *dt {
                 return Ok(col.clone());
             }
+            // Unpacking indexes the dictionary without a bounds check, so a key
+            // past its end (pyarrow builds one under a null struct row) would
+            // panic. Check the data first and raise instead.
+            col.to_data().validate_full().map_err(|e| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Invalid Arrow data in a {dt} column: {e}"
+                ))
+            })?;
             arrow_cast::cast(col.as_ref(), &target).map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
                     "Failed to unpack dictionary or run-end encoded data in {dt}: {e}"
