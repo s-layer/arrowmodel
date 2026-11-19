@@ -202,6 +202,9 @@ cython_debug/
 # Rust build artifacts
 rust/Cargo.lock
 
-.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/verify/
 .opencode/
 .agents/

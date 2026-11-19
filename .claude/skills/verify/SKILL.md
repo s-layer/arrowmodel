@@ -1,0 +1,41 @@
+---
+name: verify
+description: Prove a change to arrowmodel works end to end. Use before saying a change is done, before committing, and before opening or updating a pull request.
+---
+
+# Verify a change
+
+Run from the repository root:
+
+```bash
+uv sync --locked --dev
+prek run --all-files
+cargo clippy --all-targets -- -D warnings
+uv run pytest > /tmp/arrowmodel.log 2>&1; echo "pytest rc=$?"
+```
+
+It passes when every command exits 0. `uv sync` rebuilds the Rust extension, so the
+tests run against the code as it is now. If a Rust change does not show up in the tests,
+the build is stale: run `uv sync --reinstall-package arrowmodel`.
+
+Take each command's exit status from the command itself. In a pipeline `$?` is the last
+command's status, so `cmd | tail` hides a failure. Redirect long output to a file, then
+read the file.
+
+## What this covers
+
+- the built wheel's Python API, including the equivalence property against `to_pylist()` +
+  Pydantic
+- clippy on the Rust core
+
+## What it does not cover
+
+- performance: run the benchmarks under `benchmarks/` when the hot path changes
+- the latest dependency versions, which the weekly job checks
+
+## When it fails
+
+- Read the first failure and fix its cause. Do not rerun hoping for a green, and do not
+  skip, loosen or delete the failing test to get one.
+- If the failure is real but outside the change, say so in the PR and in your report
+  rather than working around it.
