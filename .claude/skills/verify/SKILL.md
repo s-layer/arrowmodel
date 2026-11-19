@@ -8,12 +8,11 @@ description: Prove a change to arrowmodel works end to end. Use before saying a 
 Run from the repository root:
 
 ```bash
-export CI=true  # CI's skip gate: a skipped test fails the run
 uv sync --locked --dev
 uv tool install prek  # once; skip if prek is already on PATH
 prek run --all-files
 cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
-uv run pytest > /tmp/arrowmodel.log 2>&1; echo "pytest rc=$?"
+CI=true uv run pytest > /tmp/arrowmodel.log 2>&1; echo "pytest rc=$?"
 ```
 
 It passes when every command exits 0 and every printed `rc=` is 0. `uv sync` rebuilds
@@ -23,7 +22,9 @@ arrowmodel`.
 
 `CI=true` turns on `tests/ci_skips.py`, which fails the run on any skip not allowed
 there, as CI does. Without it a skipped test only shows in the summary, and a run that
-skipped what you changed is not a pass.
+skipped what you changed is not a pass. It is set on each test line rather than
+exported, so it still holds when each line runs in a fresh shell, and other tools that
+read `CI` (Playwright, for one) keep their local behaviour.
 
 Take each command's exit status from the command itself. In a pipeline `$?` is the last
 command's status, so `cmd | tail` hides a failure. Redirect long output to a file, then
